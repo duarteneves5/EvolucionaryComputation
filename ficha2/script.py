@@ -128,18 +128,6 @@ def generate_chromosome_random():
 
     return chromosome
 
-def chromosome_to_timetable(): # generate the timetable object from the representation
-    ''' from the genes you should generate the a list with elements that
-    follow a structure similar to classes.json as follows:
-        {
-            "Course": course,
-            "Class": classe,
-            "Day": day,
-            "Start Time": time
-        }'''
-
-
-    pass
 
 # helper function to export timetables
 def save_timetable(timetable, filename='a_timetable.json',fitness_value="not calculated"):
@@ -204,7 +192,6 @@ def fitness(timetable):
 
     # Check Constraint 5 - Balanced Distribution across Days:
     valid_days = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"}
-    valid_times = {"09:00", "11:00", "14:00", "16:00", "18:00"}
 
     # Here we measure the spread of classes over the valid days.
     day_counts = {day: 0 for day in valid_days}
@@ -216,7 +203,72 @@ def fitness(timetable):
     min_classes_day = min(day_counts.values())
     penalty += (max_classes_day - min_classes_day) * 2
 
-    return penalty
+    # Additional Reward/Penalty: Morning classes.
+    # We define morning classes as those scheduled before 14:00.
+    for entry in timetable:
+        if entry["Start Time"] in {"09:00","09:30", "11:00"}:
+            if entry["Start Time"] == "11:00":
+                reward += 5  # Reward: prefer 11:00 over 9:00
+            elif entry["Start Time"] == "09:30":
+                penalty += 2  # Penalty: discourage very early classes
+            elif entry["Start Time"] == "09:00":
+                penalty += 5  # Penalty: discourage very early classes
+
+    # Additional Reward/Penalty: Noon/Afternoon classes.
+    # We consider classes with start times 14:00, 16:00, or 18:00 as "noon" classes.
+    for entry in timetable:
+        if entry["Start Time"] in {"14:00", "16:00", "18:00"}:
+            if entry["Start Time"] == "14:00":
+                reward += 5  # Reward: ideal for noon classes
+            elif entry["Start Time"] == "16:00":  # if scheduled at 16:00 or 18:00, we apply a penalty.
+                penalty += 3
+            else:
+                penalty += 5
+
+    fitness = reward - penalty
+
+    return fitness
+
+def chromosome_to_timetable(chromosome):
+    """
+    Converts a chromosome (list of genes) into a timetable.
+    Each gene is expected to be a dictionary with keys:
+    "Course", "Class", "Day", "Start Time".
+    Returns a sorted list (by Course) of these dictionaries.
+    """
+    timetable = [gene.copy() for gene in chromosome]
+    timetable.sort(key=lambda x: x["Course"])
+    return timetable
+
+
+# Generate and print 5 chromosomes with their fitness values.
+print("Analyzing 5 generated chromosomes:\n")
+
+for i in range(5):
+    # Generate a random chromosome
+    chromosome = generate_chromosome_random()
+    # Convert chromosome to timetable format
+    timetable = chromosome_to_timetable(chromosome)
+
+    print(f"Chromosome {i + 1}:")
+    #for entry in timetable:
+    #    print(entry)
+
+    # Count classes per time slot.
+    time_counts = {}
+    for entry in timetable:
+        time_counts[entry["Start Time"]] = time_counts.get(entry["Start Time"], 0) + 1
+
+    print("\nTime Slot Counts:")
+    for time in sorted(times):  # using our predefined times list
+        count = time_counts.get(time, 0)
+        print(f"{time}: {count} class(es)")
+
+    # Calculate fitness for the timetable
+    fit = fitness(timetable)
+    print("Fitness:", fit)
+    print("-" * 40)
+
 
 #---- Crossover ----#
 
