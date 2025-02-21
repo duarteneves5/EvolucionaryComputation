@@ -1,0 +1,302 @@
+[
+    {
+        "Course": "Análise Matemática II",
+        "Class": "TP1",
+        "Day": "Tuesday",
+        "Start Time": "09:00"
+    },
+    {
+        "Course": "Análise Matemática II",
+        "Class": "TP2",
+        "Day": "Tuesday",
+        "Start Time": "09:00"
+    },
+    {
+        "Course": "Análise Matemática II",
+        "Class": "TP3",
+        "Day": "Tuesday",
+        "Start Time": "09:00"
+    },
+    {
+        "Course": "Estatística",
+        "Class": "TP3",
+        "Day": "Tuesday",
+        "Start Time": "09:00"
+    },
+    {
+        "Course": "Comunicação Técnica",
+        "Class": "T1",
+        "Day": "Wednesday",
+        "Start Time": "09:00"
+    },
+    {
+        "Course": "Análise Matemática II",
+        "Class": "TP1",
+        "Day": "Thursday",
+        "Start Time": "09:00"
+    },
+    {
+        "Course": "Análise Matemática II",
+        "Class": "TP2",
+        "Day": "Thursday",
+        "Start Time": "09:00"
+    },
+    {
+        "Course": "Análise Matemática II",
+        "Class": "TP3",
+        "Day": "Thursday",
+        "Start Time": "09:00"
+    },
+    {
+        "Course": "Estatística",
+        "Class": "TP3",
+        "Day": "Thursday",
+        "Start Time": "09:00"
+    },
+    {
+        "Course": "Tópicos de Física Moderna",
+        "Class": "T1",
+        "Day": "Monday",
+        "Start Time": "09:30"
+    },
+    {
+        "Course": "Tópicos de Física Moderna",
+        "Class": "T1",
+        "Day": "Friday",
+        "Start Time": "09:30"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP1",
+        "Day": "Monday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Tópicos de Física Moderna",
+        "Class": "TP1",
+        "Day": "Monday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Tópicos de Física Moderna",
+        "Class": "TP2",
+        "Day": "Monday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP8",
+        "Day": "Monday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP9",
+        "Day": "Monday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Estatística",
+        "Class": "TP2",
+        "Day": "Tuesday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Estatística",
+        "Class": "TP2",
+        "Day": "Tuesday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Análise Matemática II",
+        "Class": "TP4",
+        "Day": "Tuesday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Estatística",
+        "Class": "TP4",
+        "Day": "Tuesday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP1",
+        "Day": "Wednesday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP8",
+        "Day": "Wednesday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Comunicação Técnica",
+        "Class": "PL1",
+        "Day": "Wednesday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Estatística",
+        "Class": "TP1",
+        "Day": "Thursday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Estatística",
+        "Class": "TP2",
+        "Day": "Thursday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Análise Matemática II",
+        "Class": "TP4",
+        "Day": "Thursday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Estatística",
+        "Class": "TP4",
+        "Day": "Thursday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP10",
+        "Day": "Friday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP7",
+        "Day": "Friday",
+        "Start Time": "11:00"
+    },
+    {
+        "Course": "Tópicos de Física Moderna",
+        "Class": "TP3",
+        "Day": "Monday",
+        "Start Time": "14:00"
+    },
+    {
+        "Course": "Tópicos de Física Moderna",
+        "Class": "TP4",
+        "Day": "Monday",
+        "Start Time": "14:00"
+    },
+    {
+        "Course": "Comunicação Técnica",
+        "Class": "PL2",
+        "Day": "Monday",
+        "Start Time": "14:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP4",
+        "Day": "Tuesday",
+        "Start Time": "14:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP6",
+        "Day": "Tuesday",
+        "Start Time": "14:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP5",
+        "Day": "Thursday",
+        "Start Time": "14:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP3",
+        "Day": "Thursday",
+        "Start Time": "14:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP4",
+        "Day": "Thursday",
+        "Start Time": "14:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP6",
+        "Day": "Friday",
+        "Start Time": "14:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP9",
+        "Day": "Friday",
+        "Start Time": "14:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP5",
+        "Day": "Monday",
+        "Start Time": "16:00"
+    },
+    {
+        "Course": "Comunicação Técnica",
+        "Class": "PL3",
+        "Day": "Monday",
+        "Start Time": "16:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP2",
+        "Day": "Tuesday",
+        "Start Time": "16:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP5",
+        "Day": "Tuesday",
+        "Start Time": "16:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP2",
+        "Day": "Thursday",
+        "Start Time": "16:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP5",
+        "Day": "Thursday",
+        "Start Time": "16:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP10",
+        "Day": "Monday",
+        "Start Time": "18:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP7",
+        "Day": "Monday",
+        "Start Time": "18:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP11",
+        "Day": "Tuesday",
+        "Start Time": "18:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP3",
+        "Day": "Tuesday",
+        "Start Time": "18:00"
+    },
+    {
+        "Course": "Princípios de Programação Procedimental",
+        "Class": "TP11",
+        "Day": "Thursday",
+        "Start Time": "18:00"
+    }
+]
