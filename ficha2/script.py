@@ -84,51 +84,15 @@ def generate_chromosome():
     return chromosome
 
 
-def generate_chromosome_random():
-    # Define the required distribution for each course.
-    requirements = {
-        "Tópicos de Física Moderna": {"T1": 2, "TP": 1},
-        "Princípios de Programação Procedimental": {"TP": 2},
-        "Comunicação Técnica": {"T1": 1, "PL": 1},
-        "Estatística": {"TP": 2},
-        "Análise Matemática II": {"TP": 2}
-    }
+def generate_random_chromosome():
+    """
+    Generates a chromosome (a candidate timetable) completely at random.
+    It randomly selects NUMBER_OF_CLASSES_PER_WEEK (11) classes from class_data,
+    without any filtering or enforcing constraints.
+    """
+    # Sample 11 classes uniformly at random from class_data (without replacement)
+    return random.sample(class_data, NUMBER_OF_CLASSES_PER_WEEK)
 
-    chromosome = []  # List to hold the randomly chosen classes (genes)
-
-    # Iterate over each course and its required class types.
-    for course, reqs in requirements.items():
-        for class_type, count in reqs.items():
-            # Filter available options for the given course.
-            options = [cls for cls in class_data
-                       if cls["Course"] == course and
-                       ((class_type in ["TP", "PL"] and cls["Class"].startswith(class_type)) or
-                        (class_type not in ["TP", "PL"] and cls["Class"] == class_type))]
-
-            # For a requirement needing more than one instance, we want all selected classes to be of the same subtype.
-            if count > 1:
-                # Build a dictionary counting available classes per subtype.
-                subtype_counts = {}
-                for option in options:
-                    subtype = option["Class"]
-                    subtype_counts[subtype] = subtype_counts.get(subtype, 0) + 1
-                # Filter to subtypes that have at least 'count' available.
-                valid_subtypes = [sub for sub, cnt in subtype_counts.items() if cnt >= count]
-                if not valid_subtypes:
-                    raise ValueError(f"Not enough available classes for {course} with type {class_type}")
-                # Randomly choose one valid subtype.
-                chosen_subtype = random.choice(valid_subtypes)
-                # Filter options to those exactly matching the chosen subtype.
-                subtype_options = [option for option in options if option["Class"] == chosen_subtype]
-                # Select the required number randomly (without replacement).
-                selected = random.sample(subtype_options, count)
-            else:
-                if len(options) < count:
-                    raise ValueError(f"Not enough available classes for {course} and type {class_type}")
-                selected = random.sample(options, count)
-            chromosome.extend(selected)
-
-    return chromosome
 
 
 # helper function to export timetables
@@ -145,10 +109,12 @@ def fitness(timetable):
     reward = 0
     penalty = 0
 
+    allowed_times = {"09:00", "09:30", "11:00", "14:00", "16:00", "18:00"}
+
     # Check Constraint 1 - Total classes must be exactly 11
     # but given that in the chromosome we already set to always 11 I think this will be always false
     if len(timetable) != NUMBER_OF_CLASSES_PER_WEEK:
-        penalty += NUMBER_OF_CLASSES_PER_WEEK - len(timetable)
+        penalty += abs(NUMBER_OF_CLASSES_PER_WEEK - len(timetable)) * 30
 
     # Check Constraint 2 -Course Distribution
     # Define the required distribution.
@@ -170,14 +136,19 @@ def fitness(timetable):
         total_required = sum(reqs.values())
 
         if len(course_entries) != total_required:   # same here, in the chromosome I already define the maximum in there so this will be always false
-            penalty += len(course_entries) - total_required
+            penalty += (len(course_entries) - total_required)*30
 
         # Check each required class type.
         for class_type, count_required in reqs.items():
-            # We use startswith to match prefixes ("TP" or "PL").
-            count = sum(1 for entry in course_entries if entry["Class"].startswith(class_type))
-            if count != count_required:  # same here, in the chromosome I already define the correct class type in there so this will be always false
-                penalty += count_required - count
+            # Use startswith for "TP" and "PL" requirements.
+            entries = [entry for entry in course_entries if entry["Class"].startswith(class_type)]
+            if len(entries) != count_required:
+                penalty += abs(count_required - len(entries)) * 30
+            # If more than one class is required for the same type, check that they have the same subtype.
+            if count_required > 1 and len(entries) == count_required:
+                subtypes = set(entry["Class"] for entry in entries)
+                if len(subtypes) > 1:
+                    penalty += 50  # Extra penalty for inconsistent subtypes
 
     # Check Constraint 3 - No Overlaps
     time_slots = {}
@@ -190,9 +161,15 @@ def fitness(timetable):
     for key, entries in time_slots.items():
         if len(entries) > 1:
             # Each extra class in a timeslot is a conflict.
-            penalty += (len(entries) - 1) * 30
+            penalty += (len(entries) - 1) * 50
 
-    valid_days = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"}
+
+
+    # Constraint 4: Valid Time Slots
+    for entry in timetable:
+        if entry["Start Time"] not in allowed_times:
+            penalty += 20
+
 
     # Check Constraint 5 - Balanced Distribution across Days: TODO THIS NEEDS TO BE CHECKED AND MADE TO PENALTY EXTREME CASES LIKE HAVING A DAY FROM 9 TO 18 AND ANOTHER JUST AT 9
     valid_days = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"}
@@ -205,9 +182,9 @@ def fitness(timetable):
     # Penalize based on the difference between the most- and least-populated days.
     max_classes_day = max(day_counts.values())
     min_classes_day = min(day_counts.values())
-    penalty += (max_classes_day - min_classes_day)
+    penalty += (max_classes_day - min_classes_day) * 10
 
-
+    '''
     # Additional Reward/Penalty: Morning classes.
     # We define morning classes as those scheduled before 14:00.
     for entry in timetable:
@@ -229,7 +206,7 @@ def fitness(timetable):
                 penalty += 3
             else:
                 penalty += 5
-
+  
     # New Constraint: Avoid Holes in Daily Schedule.
     ordered_times = ["09:00","09:30", "11:00", "14:00", "16:00", "18:00"]
     for day in valid_days:
@@ -246,13 +223,14 @@ def fitness(timetable):
                     penalty += (gap - 1) * 3
                     if next_time in {"16:00", "18:00"}:
                         penalty += 5
-
+    
 
     # New Constraint: Penalize TP or PL classes scheduled on Wednesday or Friday.
     for entry in timetable:
         if entry["Day"] in {"Wednesday", "Friday"}:
             if entry["Class"].startswith("TP") or entry["Class"].startswith("PL"):
                 penalty += 10  # Adjust the value as needed
+    '''
 
     fitness = penalty - reward
 
@@ -363,39 +341,79 @@ def simple_visualize_timetable(timetable,fitness_value, days=["Monday", "Tuesday
     plt.title(f"Timetable Visual Representation\nFitness: {fitness_value}", fontweight="bold")
     plt.show()
 
-# Generate and print 5 chromosomes with their fitness values.
-print("Analyzing 5 generated chromosomes:\n")
 
-for i in range(0):
-    # Generate a random chromosome
-    chromosome = generate_chromosome_random()
-    # Convert chromosome to timetable format
-    timetable = chromosome_to_timetable(chromosome)
+def check_constraints(timetable):
+    messages = []
 
-    print(f"Chromosome {i + 1}:")
-    #for entry in timetable:
-    #    print(entry)
+    # Constraint 1: Total Classes must be exactly 11.
+    if len(timetable) == NUMBER_OF_CLASSES_PER_WEEK:
+        messages.append(f"Total Classes: {len(timetable)} ✓")
+    else:
+        messages.append(f"Total Classes: {len(timetable)} X")
 
-    # Count classes per time slot.
-    time_counts = {}
+    # Constraint 2: Course Distribution.
+    required = {
+        "Tópicos de Física Moderna": {"T1": 2, "TP": 1},
+        "Princípios de Programação Procedimental": {"TP": 2},
+        "Comunicação Técnica": {"T1": 1, "PL": 1},
+        "Estatística": {"TP": 2},
+        "Análise Matemática II": {"TP": 2}
+    }
+    for course, reqs in required.items():
+        course_entries = [entry for entry in timetable if entry["Course"] == course]
+        total_required = sum(reqs.values())
+        if len(course_entries) == total_required:
+            dist_ok = True
+            for class_type, count_required in reqs.items():
+                # Use startswith for "TP" and "PL".
+                count = sum(1 for entry in course_entries if entry["Class"].startswith(class_type))
+                if count != count_required:
+                    dist_ok = False
+                    break
+            if dist_ok:
+                messages.append(f"{course} distribution: ✓")
+            else:
+                messages.append(f"{course} distribution: X")
+        else:
+            messages.append(f"{course} distribution: X")
+
+    # Constraint 3: No Overlaps.
+    time_slots = {}
+    overlaps = False
     for entry in timetable:
-        time_counts[entry["Start Time"]] = time_counts.get(entry["Start Time"], 0) + 1
+        key = (entry["Day"], entry["Start Time"])
+        time_slots.setdefault(key, []).append(entry)
+    for key, entries in time_slots.items():
+        if len(entries) > 1:
+            overlaps = True
+            break
+    messages.append("No Overlaps: " + ("✓" if not overlaps else "X"))
 
-    print("\nTime Slot Counts:")
-    for time in sorted(times):  # using our predefined times list
-        count = time_counts.get(time, 0)
-        print(f"{time}: {count} class(es)")
+    # Constraint 4: Valid Time Slots.
+    allowed_times = {"09:00","09:30", "11:00", "14:00", "16:00", "18:00"}
+    invalid = any(entry["Start Time"] not in allowed_times for entry in timetable)
+    messages.append("Valid Time Slots: " + ("✓" if not invalid else "X"))
 
-    # Calculate fitness for the timetable
-    fit = fitness(timetable)
-    print("Fitness:", fit)
-    print("-" * 40)
+    return messages
 
-    # Example usage:
-    # Assume 'timetable' is the sorted list you get from chromosome_to_timetable(chromosome)
-    timetable = chromosome_to_timetable(generate_chromosome_random())
-    simple_visualize_timetable(timetable,fit)
 
+def visualize_constraints(timetable, fitness_value):
+    # Prepare a summary of constraints.
+    constraints_status = "\n".join(check_constraints(timetable))
+
+    # Prepare a summary list of chosen classes.
+    classes_list = "\n".join([f"{entry['Course']} | {entry['Class']} | {entry['Day']} @ {entry['Start Time']}"
+                              for entry in sorted(timetable, key=lambda x: (x["Course"], x["Day"], x["Start Time"]))])
+
+    summary_text = f"Fitness: {fitness_value}\n\nConstraint Status:\n{constraints_status}\n\nChosen Classes:\n{classes_list}"
+
+    # Create a new figure for the summary.
+    plt.figure(figsize=(10, 8))
+    plt.text(0.5, 0.5, summary_text, fontsize=10, ha='center', va='center',
+             bbox=dict(facecolor='white', alpha=0.8, pad=10))
+    plt.axis('off')
+    plt.title("Constraints and Chosen Classes Summary", fontweight="bold")
+    plt.show()
 
 #-------------------#
 
@@ -469,6 +487,58 @@ def crossover(parent1, parent2):
     return repaired_child
 
 
+def crossover_by_day(parent1, parent2, day_split=["Monday", "Tuesday", "Wednesday"]):
+    """
+    Creates a child chromosome by taking all classes from Parent1 on the days in day_split
+    and all classes from Parent2 on the remaining days.
+    """
+    child = []
+    # Inherit classes for the chosen days from parent1.
+    for gene in parent1:
+        if gene["Day"] in day_split:
+            child.append(gene)
+    # Inherit classes for the other days from parent2.
+    for gene in parent2:
+        if gene["Day"] not in day_split:
+            child.append(gene)
+
+    # (Optional) If the total number of classes isn't 11, you might fill in randomly.
+    if len(child) < NUMBER_OF_CLASSES_PER_WEEK:
+        # Add additional classes from parent1 (or random) until 11 classes are reached.
+        missing = NUMBER_OF_CLASSES_PER_WEEK - len(child)
+        additional = random.sample(parent1, missing)
+        child.extend(additional)
+    elif len(child) > NUMBER_OF_CLASSES_PER_WEEK:
+        child = random.sample(child, NUMBER_OF_CLASSES_PER_WEEK)
+
+    return child
+
+
+def crossover_by_time(parent1, parent2):
+    """
+    Creates a child chromosome by taking all classes that start before 14:00 from Parent1,
+    and all classes that start at or after 14:00 from Parent2.
+    """
+    child = []
+    for gene in parent1:
+        # Consider 14:00 as the cutoff.
+        if gene["Start Time"] < "14:00":
+            child.append(gene)
+    for gene in parent2:
+        if gene["Start Time"] >= "14:00":
+            child.append(gene)
+
+    # Ensure we have exactly 11 classes; if not, fill in randomly from the union.
+    if len(child) < NUMBER_OF_CLASSES_PER_WEEK:
+        union = list({tuple(gene.items()): gene for gene in (parent1 + parent2)}.values())
+        missing = NUMBER_OF_CLASSES_PER_WEEK - len(child)
+        child.extend(random.sample(union, missing))
+    elif len(child) > NUMBER_OF_CLASSES_PER_WEEK:
+        child = random.sample(child, NUMBER_OF_CLASSES_PER_WEEK)
+
+    return child
+
+
 #---- Mutation ----#
 
 def mutate(individual, mutation_rate):
@@ -535,7 +605,7 @@ def tournament_selection(population, k=5):
 
 
 def genetic_algorithm(pop_size=100, generations=2500, mutation_rate=0.05):
-    population = [generate_chromosome_random() for _ in range(pop_size)]
+    population = [generate_random_chromosome() for _ in range(pop_size)]
     for gen in range(generations):
         population = sorted(population, key=fitness)
         if fitness(population[0]) == 0:
@@ -543,7 +613,7 @@ def genetic_algorithm(pop_size=100, generations=2500, mutation_rate=0.05):
         new_population = []
         while len(new_population) < pop_size:
             p1, p2 = tournament_selection(population)
-            child = crossover(p1, p2)
+            child = crossover_by_day(p1, p2)
             child = mutate(child, mutation_rate)
             new_population.append(child)
         population = new_population
@@ -562,6 +632,7 @@ for i in range(5):
     # Assume 'timetable' is the sorted list you get from chromosome_to_timetable(chromosome)
     timetable = chromosome_to_timetable(best_timetable)
     simple_visualize_timetable(timetable, fit)
+    visualize_constraints(timetable, fit)
 
 
 
