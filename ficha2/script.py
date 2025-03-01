@@ -3,6 +3,8 @@ import random
 import json
 from datetime import datetime
 import copy
+import pandas as pd
+import matplotlib.pyplot as plt
 
 NUMBER_OF_CLASSES_PER_WEEK = 11
 
@@ -188,9 +190,11 @@ def fitness(timetable):
     for key, entries in time_slots.items():
         if len(entries) > 1:
             # Each extra class in a timeslot is a conflict.
-            penalty += (len(entries) - 1) * 10
+            penalty += (len(entries) - 1) * 30
 
-    # Check Constraint 5 - Balanced Distribution across Days:
+    valid_days = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"}
+
+    # Check Constraint 5 - Balanced Distribution across Days: TODO THIS NEEDS TO BE CHECKED AND MADE TO PENALTY EXTREME CASES LIKE HAVING A DAY FROM 9 TO 18 AND ANOTHER JUST AT 9
     valid_days = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday"}
 
     # Here we measure the spread of classes over the valid days.
@@ -201,7 +205,8 @@ def fitness(timetable):
     # Penalize based on the difference between the most- and least-populated days.
     max_classes_day = max(day_counts.values())
     min_classes_day = min(day_counts.values())
-    penalty += (max_classes_day - min_classes_day) * 2
+    penalty += (max_classes_day - min_classes_day)
+
 
     # Additional Reward/Penalty: Morning classes.
     # We define morning classes as those scheduled before 14:00.
@@ -225,7 +230,31 @@ def fitness(timetable):
             else:
                 penalty += 5
 
-    fitness = reward - penalty
+    # New Constraint: Avoid Holes in Daily Schedule.
+    ordered_times = ["09:00","09:30", "11:00", "14:00", "16:00", "18:00"]
+    for day in valid_days:
+        day_entries = [entry for entry in timetable if entry["Day"] == day]
+        if len(day_entries) > 1:
+            day_entries.sort(key=lambda entry: ordered_times.index(entry["Start Time"]))
+            for i in range(len(day_entries) - 1):
+                current_time = day_entries[i]["Start Time"]
+                next_time = day_entries[i + 1]["Start Time"]
+                index_current = ordered_times.index(current_time)
+                index_next = ordered_times.index(next_time)
+                gap = index_next - index_current
+                if gap > 1:
+                    penalty += (gap - 1) * 3
+                    if next_time in {"16:00", "18:00"}:
+                        penalty += 5
+
+
+    # New Constraint: Penalize TP or PL classes scheduled on Wednesday or Friday.
+    for entry in timetable:
+        if entry["Day"] in {"Wednesday", "Friday"}:
+            if entry["Class"].startswith("TP") or entry["Class"].startswith("PL"):
+                penalty += 10  # Adjust the value as needed
+
+    fitness = penalty - reward
 
     return fitness
 
@@ -241,10 +270,103 @@ def chromosome_to_timetable(chromosome):
     return timetable
 
 
+#---- This code blocks serves to analyze the fitness function ----#
+
+def visualize_timetable(timetable, fitness_value,
+                        days=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]):
+
+    # Create a full timeline in half-hour increments from 09:00 to 20:00.
+    times = []
+    start_minutes = 9 * 60  # 09:00 in minutes
+    end_minutes = 20 * 60  # 20:00 in minutes
+    for t in range(start_minutes, end_minutes + 1, 30):
+        hour = t // 60
+        minute = t % 60
+        times.append(f"{hour:02d}:{minute:02d}")
+
+    # Create a DataFrame with these times as rows and days as columns.
+    schedule = pd.DataFrame('', index=times, columns=days)
+
+    # Allowed start times (when a class can begin).
+    allowed_starts = {"09:00", "09:30", "11:00", "14:00", "16:00", "18:00"}
+    duration_slots = 4  # 2 hours = 4 half-hour slots
+
+    # For each class in the timetable, fill the corresponding block.
+    for entry in timetable:
+        day = entry["Day"]
+        start_time = entry["Start Time"]
+        # Only consider classes that start at one of the allowed times.
+        if start_time not in allowed_starts:
+            continue
+        if start_time in times:
+            start_idx = times.index(start_time)
+            # Place the class information in the first cell.
+            text = f"{entry['Course']}\n{entry['Class']}"
+            schedule.at[times[start_idx], day] = text
+            # For the next (duration_slots - 1) rows, mark as continuation.
+            for j in range(1, duration_slots):
+                if start_idx + j < len(times):
+                    schedule.at[times[start_idx + j], day] = "..."
+
+    # Set up the matplotlib figure.
+    fig, ax = plt.subplots(figsize=(12, 10))
+    ax.axis('tight')
+    ax.axis('off')
+
+    # Create the table using the DataFrame values.
+    table = ax.table(cellText=schedule.values,
+                     rowLabels=schedule.index,
+                     colLabels=schedule.columns,
+                     cellLoc='center',
+                     loc='center')
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 2)
+
+    plt.title(f"Timetable Visual Representation\nFitness: {fitness_value}", fontweight="bold")
+    plt.show()
+
+
+def simple_visualize_timetable(timetable,fitness_value, days=["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+                               times=["09:00", "09:30", "11:00", "14:00", "16:00", "18:00"]):
+    # Create a DataFrame with times as rows and days as columns
+    schedule = pd.DataFrame('', index=times, columns=days)
+
+    # Populate the DataFrame with schedule entries.
+    # If more than one class occupies the same timeslot, we join them with a separator.
+    for entry in timetable:
+        day = entry["Day"]
+        time = entry["Start Time"]
+        text = f"{entry['Course']}\n{entry['Class']}"
+        # If a cell already has an entry, append to it.
+        if schedule.loc[time, day]:
+            schedule.loc[time, day] += "\n---\n" + text
+        else:
+            schedule.loc[time, day] = text
+
+    # Set up the matplotlib figure
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.axis('tight')
+    ax.axis('off')
+
+    # Create table using the DataFrame values
+    table = ax.table(cellText=schedule.values,
+                     rowLabels=schedule.index,
+                     colLabels=schedule.columns,
+                     cellLoc='center',
+                     loc='center')
+
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 2)
+
+    plt.title(f"Timetable Visual Representation\nFitness: {fitness_value}", fontweight="bold")
+    plt.show()
+
 # Generate and print 5 chromosomes with their fitness values.
 print("Analyzing 5 generated chromosomes:\n")
 
-for i in range(5):
+for i in range(0):
     # Generate a random chromosome
     chromosome = generate_chromosome_random()
     # Convert chromosome to timetable format
@@ -269,26 +391,147 @@ for i in range(5):
     print("Fitness:", fit)
     print("-" * 40)
 
+    # Example usage:
+    # Assume 'timetable' is the sorted list you get from chromosome_to_timetable(chromosome)
+    timetable = chromosome_to_timetable(generate_chromosome_random())
+    simple_visualize_timetable(timetable,fit)
+
+
+#-------------------#
 
 #---- Crossover ----#
 
 def crossover(parent1, parent2):
-    # TODO YOUR CODE HERE
-    pass
+    """
+    One-point crossover with repair.
+
+    Steps:
+    1. Randomly choose a crossover point.
+    2. Create a child by combining the first part of parent1 with the second part of parent2.
+    3. Repair the child to enforce the required distribution for each course.
+       - For each course and class type requirement, count the genes.
+         If there are too many, randomly remove extras.
+         If there are too few, randomly add missing genes from the available options.
+    4. Shuffle the repaired child and return it.
+    """
+    # Step 1 & 2: One-point crossover.
+    cp = random.randint(1, len(parent1) - 1)
+    child = parent1[:cp] + parent2[cp:]
+
+    # Required distribution for each course.
+    requirements = {
+        "Tópicos de Física Moderna": {"T1": 2, "TP": 1},
+        "Princípios de Programação Procedimental": {"TP": 2},
+        "Comunicação Técnica": {"T1": 1, "PL": 1},
+        "Estatística": {"TP": 2},
+        "Análise Matemática II": {"TP": 2}
+    }
+
+    # Step 3: Repair the child so that the course distribution is correct.
+    repaired_child = []
+
+    # For each course and required class type, fix the genes.
+    for course, reqs in requirements.items():
+        for class_type, req_count in reqs.items():
+            # Depending on the class type, filter using exact match (for T1)
+            # or prefix match (for TP and PL).
+            if class_type in {"TP", "PL"}:
+                genes = [gene for gene in child if gene["Course"] == course and gene["Class"].startswith(class_type)]
+            else:
+                genes = [gene for gene in child if gene["Course"] == course and gene["Class"] == class_type]
+
+            # If there are too many genes for this requirement, randomly pick the required number.
+            if len(genes) > req_count:
+                genes = random.sample(genes, req_count)
+            # If there are too few, add missing genes.
+            elif len(genes) < req_count:
+                # Get available options from class_data.
+                if class_type in {"TP", "PL"}:
+                    options = [cls for cls in class_data
+                               if cls["Course"] == course and cls["Class"].startswith(class_type)]
+                else:
+                    options = [cls for cls in class_data
+                               if cls["Course"] == course and cls["Class"] == class_type]
+                # Remove those already selected.
+                options = [opt for opt in options if opt not in genes]
+                missing_count = req_count - len(genes)
+                if len(options) < missing_count:
+                    # If not enough options remain, add all (this should be rare if data is consistent).
+                    missing = options
+                else:
+                    missing = random.sample(options, missing_count)
+                genes.extend(missing)
+            # Append the genes for this course/type to the repaired child.
+            repaired_child.extend(genes)
+
+    # Step 4: Shuffle the repaired child to remove any ordering bias.
+    random.shuffle(repaired_child)
+    return repaired_child
+
 
 #---- Mutation ----#
 
 def mutate(individual, mutation_rate):
-    # TODO YOUR CODE HERE
-    pass
+    """
+    Mutates the given individual (chromosome) in place.
+    For each gene in the chromosome, with probability mutation_rate,
+    the gene is replaced by another gene (class) that satisfies the same
+    course and class type constraint.
+
+    The mutation operator preserves the required distribution by ensuring
+    that the replacement gene belongs to the same course and matches the
+    class type criteria.
+    """
+    # Create a copy of the individual to avoid modifying the original in-place.
+    mutated = individual.copy()
+
+    for i, gene in enumerate(mutated):
+        if random.random() < mutation_rate:
+            course = gene["Course"]
+            class_type = gene["Class"]
+            # Determine if we are matching with prefix or exact.
+            if class_type.startswith("TP") or class_type.startswith("PL"):
+                # Use prefix matching (e.g., if gene is "TP3", allow any "TP" class)
+                options = [cls for cls in class_data if
+                           cls["Course"] == course and cls["Class"].startswith(class_type[:2])]
+            else:
+                options = [cls for cls in class_data if cls["Course"] == course and cls["Class"] == class_type]
+
+            # To avoid selecting the same gene, remove the current gene if alternatives exist.
+            if len(options) > 1:
+                options = [opt for opt in options if opt != gene]
+            # Only mutate if there is at least one alternative.
+            if options:
+                new_gene = random.choice(options)
+                mutated[i] = new_gene
+    return mutated
+
 
 #---- Parent Selection ----#
 
 
 def tournament_selection(population, k=5):
-    # TODO YOUR CODE HERE
-    # Note: use sorted(<...>, key=fitness) to sort by value of the fitness function call
-    pass
+    """
+    Performs tournament selection on the given population and returns two parents.
+
+    For each parent:
+      1. Randomly select k individuals from the population.
+      2. Choose the individual with the best (lowest) fitness among those k.
+
+    Returns:
+      A tuple containing two selected parent individuals.
+    """
+
+    def select_one():
+        # Randomly choose k individuals from the population.
+        competitors = random.sample(population, k)
+        # Sort competitors by their fitness (lower is better)
+        competitors.sort(key=lambda ind: fitness(ind))
+        return competitors[0]
+
+    parent1 = select_one()
+    parent2 = select_one()
+    return parent1, parent2
 
 
 def genetic_algorithm(pop_size=100, generations=2500, mutation_rate=0.05):
@@ -307,7 +550,18 @@ def genetic_algorithm(pop_size=100, generations=2500, mutation_rate=0.05):
         print(f"Generation {gen + 1}, Best Fitness: {fitness(population[0])}")
     return population[0]
 
-best_timetable = genetic_algorithm()
+for i in range(5):
+    best_timetable = genetic_algorithm()
+
+    # Calculate fitness for the timetable
+    fit = fitness(best_timetable)
+    print("Fitness:", fit)
+    print("-" * 40)
+
+    # Example usage:
+    # Assume 'timetable' is the sorted list you get from chromosome_to_timetable(chromosome)
+    timetable = chromosome_to_timetable(best_timetable)
+    simple_visualize_timetable(timetable, fit)
 
 
 
