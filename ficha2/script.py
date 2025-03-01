@@ -184,28 +184,28 @@ def fitness(timetable):
     min_classes_day = min(day_counts.values())
     penalty += (max_classes_day - min_classes_day) * 10
 
-    '''
+
     # Additional Reward/Penalty: Morning classes.
     # We define morning classes as those scheduled before 14:00.
     for entry in timetable:
         if entry["Start Time"] in {"09:00","09:30", "11:00"}:
             if entry["Start Time"] == "11:00":
-                reward += 5  # Reward: prefer 11:00 over 9:00
+                reward += 10  # Reward: prefer 11:00 over 9:00
             elif entry["Start Time"] == "09:30":
-                penalty += 2  # Penalty: discourage very early classes
+                penalty += 4  # Penalty: discourage very early classes
             elif entry["Start Time"] == "09:00":
-                penalty += 5  # Penalty: discourage very early classes
+                penalty += 10  # Penalty: discourage very early classes
 
     # Additional Reward/Penalty: Noon/Afternoon classes.
     # We consider classes with start times 14:00, 16:00, or 18:00 as "noon" classes.
     for entry in timetable:
         if entry["Start Time"] in {"14:00", "16:00", "18:00"}:
             if entry["Start Time"] == "14:00":
-                reward += 5  # Reward: ideal for noon classes
+                reward += 10  # Reward: ideal for noon classes
             elif entry["Start Time"] == "16:00":  # if scheduled at 16:00 or 18:00, we apply a penalty.
-                penalty += 3
+                penalty += 6
             else:
-                penalty += 5
+                penalty += 10
   
     # New Constraint: Avoid Holes in Daily Schedule.
     ordered_times = ["09:00","09:30", "11:00", "14:00", "16:00", "18:00"]
@@ -222,15 +222,15 @@ def fitness(timetable):
                 if gap > 1:
                     penalty += (gap - 1) * 3
                     if next_time in {"16:00", "18:00"}:
-                        penalty += 5
+                        penalty += 10
     
 
     # New Constraint: Penalize TP or PL classes scheduled on Wednesday or Friday.
     for entry in timetable:
         if entry["Day"] in {"Wednesday", "Friday"}:
             if entry["Class"].startswith("TP") or entry["Class"].startswith("PL"):
-                penalty += 10  # Adjust the value as needed
-    '''
+                penalty += 20  # Adjust the value as needed
+
 
     fitness = penalty - reward
 
