@@ -190,22 +190,22 @@ def fitness(timetable):
     for entry in timetable:
         if entry["Start Time"] in {"09:00","09:30", "11:00"}:
             if entry["Start Time"] == "11:00":
-                reward += 10  # Reward: prefer 11:00 over 9:00
+                reward += 15  # Reward: prefer 11:00 over 9:00
             elif entry["Start Time"] == "09:30":
-                penalty += 4  # Penalty: discourage very early classes
+                penalty += 6  # Penalty: discourage very early classes
             elif entry["Start Time"] == "09:00":
-                penalty += 10  # Penalty: discourage very early classes
+                penalty += 20  # Penalty: discourage very early classes
 
     # Additional Reward/Penalty: Noon/Afternoon classes.
     # We consider classes with start times 14:00, 16:00, or 18:00 as "noon" classes.
     for entry in timetable:
         if entry["Start Time"] in {"14:00", "16:00", "18:00"}:
             if entry["Start Time"] == "14:00":
-                reward += 10  # Reward: ideal for noon classes
+                reward += 15  # Reward: ideal for noon classes
             elif entry["Start Time"] == "16:00":  # if scheduled at 16:00 or 18:00, we apply a penalty.
                 penalty += 6
             else:
-                penalty += 10
+                penalty += 20
   
     # New Constraint: Avoid Holes in Daily Schedule.
     ordered_times = ["09:00","09:30", "11:00", "14:00", "16:00", "18:00"]
