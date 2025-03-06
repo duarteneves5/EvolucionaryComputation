@@ -7,7 +7,7 @@ def install_requirements():
         "torch==2.5.1",  # PyTorch for neural networks
         "numpy==1.23.5",  # Numerical computing
         "gymnasium==0.28",  # OpenAI Gym for RL environments
-        "evogym==2.0.0",  # EvoGym for evolutionary robotics
+        "evogym==2.0.0",  # EvoGym for evolutionary robotic
         "imageio==2.36.1"
     ]
     

@@ -190,9 +190,9 @@ def fitness(timetable):
     for entry in timetable:
         if entry["Start Time"] in {"09:00","09:30", "11:00"}:
             if entry["Start Time"] == "11:00":
-                reward += 15  # Reward: prefer 11:00 over 9:00
+                reward += 30  # Reward: prefer 11:00 over 9:00
             elif entry["Start Time"] == "09:30":
-                penalty += 6  # Penalty: discourage very early classes
+                penalty += 10  # Penalty: discourage very early classes
             elif entry["Start Time"] == "09:00":
                 penalty += 20  # Penalty: discourage very early classes
 
@@ -201,11 +201,11 @@ def fitness(timetable):
     for entry in timetable:
         if entry["Start Time"] in {"14:00", "16:00", "18:00"}:
             if entry["Start Time"] == "14:00":
-                reward += 15  # Reward: ideal for noon classes
+                reward += 10  # Reward: ideal for noon classes
             elif entry["Start Time"] == "16:00":  # if scheduled at 16:00 or 18:00, we apply a penalty.
                 penalty += 6
             else:
-                penalty += 20
+                penalty += 10
   
     # New Constraint: Avoid Holes in Daily Schedule.
     ordered_times = ["09:00","09:30", "11:00", "14:00", "16:00", "18:00"]
@@ -631,7 +631,7 @@ for i in range(5):
     # Example usage:
     # Assume 'timetable' is the sorted list you get from chromosome_to_timetable(chromosome)
     timetable = chromosome_to_timetable(best_timetable)
-    simple_visualize_timetable(timetable, fit)
+    visualize_timetable(timetable, fit)
     visualize_constraints(timetable, fit)
 
 
