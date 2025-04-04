@@ -8,82 +8,82 @@ from evogym import EvoWorld, EvoSim, EvoViewer, sample_robot, get_full_connectiv
 import utils
 from fixed_controllers import *
 
-
 # ---- PARAMETERS ----
 NUM_GENERATIONS = 50  # Number of generations to evolve
-POPULATION_SIZE = 25    # number of robots per generation
-NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.1))   # number of top fitness robots to pass to the next population
+POPULATION_SIZE = 25  # Number of robots per generation
+NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.05))  # 5% elitism
 MUTATION_RATE = 0.2
-MIN_GRID_SIZE = (5, 5)  # Minimum size of the robot grid
-MAX_GRID_SIZE = (5, 5)  # Maximum size of the robot grid
+MIN_GRID_SIZE = (5, 5)
+MAX_GRID_SIZE = (5, 5)
 STEPS = 250
 SCENARIO = 'Walker-v0'
+# For dynamic mutation adjustments
+STAGNATION_LIMIT = 5  # # of gens without improvement before we do something
+MUTATION_RATE_INCREASE = 2.0  # Factor to multiply mutation rate when stagnant
+RANDOM_INJECTION_FRACTION = 0.2  # Replace 20% of the population with random new ones if stagnant
+
 # ---- VOXEL TYPES ----
 VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
 
+# Choose a controller
 CONTROLLER = alternating_gait
-#CONTROLLER = hopping_motion
 
-def evaluate_fitness(robot_structure, view=False):    
+
+# CONTROLLER = hopping_motion
+
+def evaluate_fitness(robot_structure, view=False):
+    """
+    Evaluate the fitness of a robot by simulating it in the environment.
+    Returns the cumulative reward.
+    """
     try:
         connectivity = get_full_connectivity(robot_structure)
-  
         env = gym.make(SCENARIO, max_episode_steps=STEPS, body=robot_structure, connections=connectivity)
         env.reset()
         sim = env.sim
-        viewer = EvoViewer(sim)
-        viewer.track_objects('robot')
-        t_reward = 0
-        action_size = sim.get_dim_action_space('robot')  # Get correct action size
-        for t in range(STEPS):  
-            # Update actuation before stepping
-            actuation = CONTROLLER(action_size,t)
+
+        if view:
+            viewer = EvoViewer(sim)
+            viewer.track_objects('robot')
+
+        total_reward = 0
+        action_size = sim.get_dim_action_space('robot')  # correct action size
+
+        for t in range(STEPS):
+            actuation = CONTROLLER(action_size, t)
             if view:
-                viewer.render('screen') 
+                viewer.render('screen')
+
             ob, reward, terminated, truncated, info = env.step(actuation)
-            t_reward += reward
+            total_reward += reward
 
             if terminated or truncated:
                 env.reset()
                 break
 
-        viewer.close()
+        if view:
+            viewer.close()
         env.close()
-        return t_reward
-    except (ValueError, IndexError) as e:
+
+        return total_reward
+    except (ValueError, IndexError):
         return 0.0
 
 
 def create_random_robot():
-    """Generate a valid random robot structure."""
-    grid_size = (random.randint(MIN_GRID_SIZE[0], MAX_GRID_SIZE[0]), random.randint(MIN_GRID_SIZE[1], MAX_GRID_SIZE[1]))
-    random_robot, _ = sample_robot(grid_size)
-    return random_robot
+    """Generate a valid random robot structure (connected and has at least one actuator)."""
+    while True:
+        grid_size = (random.randint(MIN_GRID_SIZE[0], MAX_GRID_SIZE[0]),
+                     random.randint(MIN_GRID_SIZE[1], MAX_GRID_SIZE[1]))
+        random_robot, _ = sample_robot(grid_size)
+        if is_connected(random_robot) and np.any(random_robot == 3):  # Must have at least one actuator
+            return random_robot
 
 
-def random_search():
-    """Perform a random search to find the best robot structure."""
-    best_robot = None
-    best_fitness = -float('inf')
-    
-    for it in range(NUM_GENERATIONS):
-        robot = create_random_robot() 
-        fitness_score = evaluate_fitness(robot)
-        
-        if fitness_score > best_fitness:
-            best_fitness = fitness_score
-            best_robot = robot
-        
-        print(f"Iteration {it + 1}: Fitness = {fitness_score}")
-    
-    return best_robot, best_fitness
-
-
-def select_parent(
-        population,
-        fitness_scores,
-        tournament_size=3
-) -> tuple[np.ndarray, int]:
+def select_parent(population, fitness_scores, tournament_size=3):
+    """
+    Tournament selection. Returns (robot, index_in_population).
+    """
     candidates = random.sample(range(len(population)), tournament_size)
     best = candidates[0]
     for c in candidates[1:]:
@@ -92,27 +92,38 @@ def select_parent(
     return population[best], best
 
 
-def is_valid_robot(robot) -> bool:
-    """Check if the robot is fully connected."""
-    return is_connected(robot)
-
-# Check if the robot has at least one actuator
-def has_actuator(robot) -> bool:
-    """Check if the robot has at least one actuator."""
-    return bool(np.any(robot == 3))
+def is_valid_robot(robot):
+    """Check if the robot is connected and has at least one actuator."""
+    if not is_connected(robot):
+        return False
+    return np.any(robot == 3)  # must have actuator(s)
 
 
-def mutate(
-        robot: np.ndarray,
-        mutation_rate: float = 0.1,
-) -> np.ndarray:
+def is_critical_voxel(robot, i, j):
     """
-    Mutate the robot by changing voxel types, removing voxels, or adding voxels.
-    Args:
-        robot: The robot structure to mutate.
-        mutation_rate: Probability of mutating a voxel.
-    Returns:
-        The mutated robot structure.
+    Check if removing voxel (i, j) disconnects the robot.
+    """
+    temp = np.copy(robot)
+    temp[i, j] = 0
+    return not is_connected(temp)
+
+
+def is_adjacent_to_existing_voxel(robot, i, j):
+    """
+    Check if (i, j) is adjacent to a non-empty voxel in the grid.
+    """
+    x_shape, y_shape = robot.shape
+    for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        ni, nj = i + di, j + dj
+        if 0 <= ni < x_shape and 0 <= nj < y_shape and robot[ni, nj] != 0:
+            return True
+    return False
+
+
+def mutate(robot, mutation_rate=0.1):
+    """
+    Mutate the robot by randomly adding, removing, or changing voxel types.
+    Ensures the result remains connected with at least one actuator if possible.
     """
     mutated_robot = np.copy(robot)
     x_shape, y_shape = robot.shape
@@ -120,124 +131,150 @@ def mutate(
     for i in range(x_shape):
         for j in range(y_shape):
             if random.random() > mutation_rate:
-                continue  # Skip this voxel based on mutation rate
+                continue  # skip mutation at this voxel
 
-            if mutated_robot[i, j] != 0:  # Non-empty voxel
-                # Change voxel type or remove it
-                if random.random() < 0.5 and not is_critical_voxel(mutated_robot, i, j):  # 50% chance to change type
+            if mutated_robot[i, j] != 0:
+                # either change type or remove voxel
+                if random.random() < 0.5 and not is_critical_voxel(mutated_robot, i, j):
+                    # change type
                     new_type = random.choice([t for t in VOXEL_TYPES if t != mutated_robot[i, j]])
                     mutated_robot[i, j] = new_type
-                else:  # 50% chance to remove voxel
-                    #if not is_critical_voxel(mutated_robot, i, j):  # Check if voxel is not critical
-                    mutated_robot[i, j] = 0  # Remove the voxel
-            else:  # Empty voxel
-                # Add a new voxel if it's adjacent to an existing voxel
+                else:
+                    # remove voxel (if not critical)
+                    if not is_critical_voxel(mutated_robot, i, j):
+                        mutated_robot[i, j] = 0
+            else:
+                # empty voxel, possibility to add if adjacent to existing
                 if is_adjacent_to_existing_voxel(mutated_robot, i, j):
-                    mutated_robot[i, j] = random.choice(VOXEL_TYPES[1:])  # Add a non-empty voxel
+                    mutated_robot[i, j] = random.choice(VOXEL_TYPES[1:])  # any non-empty type
 
-        # Check if the mutated robot is still connected
-        if is_connected(mutated_robot):
-            return mutated_robot
-
-    # If no valid mutation is found after multiple attempts, return the original robot
-    return robot
-
-def is_critical_voxel(robot: np.ndarray, i: int, j: int) -> bool:
-    """
-    Check if a voxel is critical (i.e., its removal would disconnect the robot).
-    Args:
-        robot: The robot structure.
-        i, j: The coordinates of the voxel to check.
-    Returns:
-        True if the voxel is critical, False otherwise.
-    """
-    temp_robot = np.copy(robot)
-    temp_robot[i, j] = 0  # Temporarily remove the voxel
-    return not is_connected(temp_robot)
-
-def is_adjacent_to_existing_voxel(robot: np.ndarray, i: int, j: int) -> bool:
-    """
-    Check if an empty voxel is adjacent to an existing voxel.
-    Args:
-        robot: The robot structure.
-        i, j: The coordinates of the voxel to check.
-    Returns:
-        True if the voxel is adjacent to an existing voxel, False otherwise.
-    """
-    x_shape, y_shape = robot.shape
-    for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:  # Check all four directions
-        ni, nj = i + di, j + dj
-        if 0 <= ni < x_shape and 0 <= nj < y_shape and robot[ni, nj] != 0:
-            return True
-    return False
+    # Validate final mutated robot; if invalid, revert
+    if is_valid_robot(mutated_robot):
+        return mutated_robot
+    else:
+        return robot
 
 
-
-# Crossover
 def crossover(parent1, parent2):
-    """Crossover two parents while ensuring the offspring are connected."""
-    for _ in range(10):  # Try up to 10 times to find a valid crossover
-        if random.random() < 0.5:
-            crossover_point = random.randint(1, parent1.shape[0] - 1)
-            child1 = np.vstack((parent1[:crossover_point], parent2[crossover_point:]))
-            child2 = np.vstack((parent2[:crossover_point], parent1[crossover_point:]))
-        else:
-            crossover_point = random.randint(1, parent1.shape[1] - 1)
-            child1 = np.hstack((parent1[:, :crossover_point], parent2[:, crossover_point:]))
-            child2 = np.hstack((parent2[:, :crossover_point], parent1[:, crossover_point:]))
+    """
+    Example: mask-based crossover. For each voxel, pick from parent1 or parent2
+    with 50% probability. Returns (child1, child2).
+    Will attempt multiple times to get valid children.
+    """
+    attempts = 10
+    for _ in range(attempts):
+        # Create random mask of the same shape
+        mask = np.random.randint(0, 2, size=parent1.shape)
+        child1 = np.where(mask == 0, parent1, parent2)
+        child2 = np.where(mask == 0, parent2, parent1)
+
         if is_valid_robot(child1) and is_valid_robot(child2):
             return child1, child2
+
+    # If all attempts fail, just return copies of the parents
     return parent1, parent2
 
+
+def random_injection(population, fraction=0.2):
+    """
+    Replace the bottom fraction of population with fresh random robots.
+    E.g., if fraction=0.2 and population size=25, replace ~5 with random new ones.
+    """
+    n_replace = max(1, int(len(population) * fraction))
+    # Sort by fitness ascending, replace the worst n_replace
+    fitnesses = [evaluate_fitness(r) for r in population]
+    sort_idx = np.argsort(fitnesses)
+    # replace worst
+    for i in range(n_replace):
+        population[sort_idx[i]] = create_random_robot()
+    return population
+
+
+# ---------------- Main Evolutionary Loop ----------------
 best_fitness = -float('inf')
-previous_fitness = -float('inf')
 best_robot = None
+
+# Initial population
 population = [create_random_robot() for _ in range(POPULATION_SIZE)]
-#fitness_window = [.0, .0, .0]
-default_mutation_rate = MUTATION_RATE
-mutation_rate = MUTATION_RATE
+
+# Track stagnation
+stagnation_counter = 0
+current_mutation_rate = MUTATION_RATE
 
 for gen in range(NUM_GENERATIONS):
-    # get the population fitness
+    # Evaluate fitness
     population_fitness = [evaluate_fitness(robot) for robot in population]
 
-    # sort the population fitness
-    sorted_population_fitness_idxs = np.argsort(population_fitness)
-    # store the index of the most fit robot
-    biggest_fitness_idx = sorted_population_fitness_idxs[-1]
-    # if the fitness is bigger than the current best fitness, update the best fitness and robot
-    if population_fitness[biggest_fitness_idx] > best_fitness:
-        best_fitness = population_fitness[biggest_fitness_idx]
-        best_robot = population[biggest_fitness_idx]
+    # Find best in current population
+    best_idx = np.argmax(population_fitness)
+    gen_best_fit = population_fitness[best_idx]
 
-    #fitness_window[gen%FITNESS_SLIDING_WINDOW_SIZE] = best_fitness
-    #if fitness_window
-    #if best_fitness == previous_fitness:
-    #    mutation_rate = min(1.0, mutation_rate*1.5)
-    #    print(f"Stagnant generation, increasing mutation rate to {mutation_rate}")
-    #else:
-    #    print(f"Generation improved, fallback to default mutation rate {default_mutation_rate}")
-    #    mutation_rate = default_mutation_rate
+    # Check for improvement
+    if gen_best_fit > best_fitness:
+        best_fitness = gen_best_fit
+        best_robot = population[best_idx]
+        stagnation_counter = 0
+        current_mutation_rate = MUTATION_RATE  # reset to default
+    else:
+        stagnation_counter += 1
 
-    print(f"Gen {gen}: Best fitness: {population_fitness[biggest_fitness_idx]} - Best robot structure: {best_robot}")
+    print(
+        f"Gen {gen} | Best Fitness: {best_fitness:.3f} | Current Gen Best: {gen_best_fit:.3f} | Mutation Rate: {current_mutation_rate:.3f}")
 
+    # If we've been stagnant, increase mutation or inject random
+    if stagnation_counter >= STAGNATION_LIMIT:
+        print(
+            f"> Stagnation reached {STAGNATION_LIMIT} generations: Increasing mutation and injecting random individuals.")
+        current_mutation_rate = min(1.0, current_mutation_rate * MUTATION_RATE_INCREASE)
+        # random injection
+        population = random_injection(population, RANDOM_INJECTION_FRACTION)
+        # reset stagnation counter so we wait for new improvements
+        stagnation_counter = 0
+
+    # Sort population by fitness to get the top individuals
+    sorted_indices = np.argsort(population_fitness)
     new_population = []
-    # pass the elitists to the next generation
-    for i in sorted_population_fitness_idxs[-NUM_ELITE_ROBOTS:]:
+
+    # Elitism: keep top N
+    for i in sorted_indices[-NUM_ELITE_ROBOTS:]:
         new_population.append(population[i])
 
-    while len(new_population) < POPULATION_SIZE:
-        parent1, parent1_idx = select_parent(population, population_fitness)
-        population.pop(parent1_idx)
-        parent2, _ = select_parent(population, population_fitness)
-        child1, child2 = crossover(parent1, parent2)
-        new_population.extend([mutate(child1), mutate(child2)])
+    # Fill the rest of the new population
+    # Make a copy so we don't remove from original 'population' while selecting
+    pop_copy = population[:]
+    fitness_copy = population_fitness[:]
 
-    previous_fitness = best_fitness
+    while len(new_population) < POPULATION_SIZE:
+        # Parent selection
+        parent1, idx1 = select_parent(pop_copy, fitness_copy)
+        # Remove it from the "pool" so we don't select the exact same index again
+        pop_copy.pop(idx1)
+        fitness_copy.pop(idx1)
+
+        parent2, idx2 = select_parent(pop_copy, fitness_copy)
+        # Important: do not pop idx2 from pop_copy yet, because removing idx1 changes indexing
+        # but for simplicity, we won't re-use the same parent in one iteration, so it's okay.
+
+        # Crossover
+        child1, child2 = crossover(parent1, parent2)
+
+        # Mutation
+        child1 = mutate(child1, current_mutation_rate)
+        child2 = mutate(child2, current_mutation_rate)
+
+        # Add children
+        new_population.append(child1)
+        if len(new_population) < POPULATION_SIZE:
+            new_population.append(child2)
+
     population = new_population
 
-i = 0
-while i < 10:
+# After evolution, demonstrate the best robot
+print(f"\n=== EVOLUTION COMPLETE ===\nBest Fitness Found: {best_fitness}")
+print(f"Best Robot:\n{best_robot}")
+
+# Optional: run best robot a few times, or create a GIF, etc.
+for i in range(3):
     utils.simulate_best_robot(best_robot, scenario=SCENARIO, steps=STEPS)
-    i += 1
+
 utils.create_gif(best_robot, filename='random_search.gif', scenario=SCENARIO, steps=STEPS, controller=CONTROLLER)
