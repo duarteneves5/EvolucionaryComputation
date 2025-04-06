@@ -1,3 +1,5 @@
+import os
+import datetime
 import numpy as np
 import random
 import copy
@@ -21,6 +23,7 @@ SCENARIO = 'Walker-v0'
 STAGNATION_LIMIT = 5  # # of gens without improvement before we do something
 MUTATION_RATE_INCREASE = 2.0  # Factor to multiply mutation rate when stagnant
 RANDOM_INJECTION_FRACTION = 0.2  # Replace 20% of the population with random new ones if stagnant
+STD_THRESHOLD = 0.5  # Additional parameter for adaptive control based on fitness diversity:
 
 # ---- VOXEL TYPES ----
 VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
@@ -28,9 +31,44 @@ VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
 # Choose a controller
 CONTROLLER = alternating_gait
 
-
 # CONTROLLER = hopping_motion
 
+OUTPUT_ROBOT_GIFS = True                # this serves to output the robot gifs on the evogym so we can better
+USE_REFINED_MUTATE = False
+USE_DIVERSITY_PRESERVATION = False
+USE_ADAPTIVE_PARAMETER_CONTROL = False  # this ensures the population doesn't become too homogeneous, which is key to avoiding premature convergence.
+TEST_NAME = "DEFAULT"                   # this serves for when testing for example a new feature to be easily tracked in the results folder
+
+# ------------------ Run Directory and Logger Setup ------------------
+def setup_run_directory():
+    base_dir = os.path.join("results", "random_structure")
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
+    # Use a timestamp to create a unique run folder.
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.path.join(base_dir, f"run_{TEST_NAME}_{timestamp}")
+    os.makedirs(run_dir)
+    return run_dir
+
+RUN_DIR = setup_run_directory()
+LOG_FILE = os.path.join(RUN_DIR, "log.txt")
+
+def log(message):
+    # Print to console and also write to log file.
+    print(message)
+    with open(LOG_FILE, "a") as f:
+        f.write(message + "\n")
+
+# ------------------ Function to Capture Simulation Frame ------------------
+def capture_simulation_frame(robot, generation, scenario, steps, controller):
+
+    #utils.simulate_best_robot(robot, scenario, steps)
+
+    filename = os.path.join(RUN_DIR, f"simulation_frame_gen_{generation}.gif")
+
+    utils.create_gif(robot, filename=filename, scenario=scenario, steps=steps, controller=controller)
+
+# ------------------ Evaluation and Variation Functions ------------------
 def evaluate_fitness(robot_structure, view=False):
     """
     Evaluate the fitness of a robot by simulating it in the environment.
@@ -155,6 +193,43 @@ def mutate(robot, mutation_rate=0.1):
         return robot
 
 
+# ----- Refined Mutation Operator -----
+# This server to target changes to the robot structure more strategically by focusing on edge voxels and nearby empty cells that could become
+# part of the structure, rather then aplying random mutations uniformly across all voxels.
+# it selectively mutates parts of the structure that are more likely to yield meaningful variations while preserving connectivity and ensuring the robot remains viable.
+
+def refined_mutate(robot, mutation_rate=0.1):
+    mutated_robot = np.copy(robot)
+    x_shape, y_shape = robot.shape
+
+    # Identify edge voxels: non-empty voxels adjacent to at least one empty cell.
+    edge_indices = [(i, j) for i in range(x_shape) for j in range(y_shape)
+                    if mutated_robot[i, j] != 0 and is_adjacent_to_existing_voxel(mutated_robot, i, j)]
+
+    # Identify empty voxels adjacent to an existing voxel.
+    empty_adjacent = [(i, j) for i in range(x_shape) for j in range(y_shape)
+                      if mutated_robot[i, j] == 0 and is_adjacent_to_existing_voxel(mutated_robot, i, j)]
+
+    # Mutate edge voxels: either change type or remove.
+    for (i, j) in edge_indices:
+        if random.random() < mutation_rate:
+            if random.random() < 0.5 and not is_critical_voxel(mutated_robot, i, j):
+                new_type = random.choice([t for t in VOXEL_TYPES if t != mutated_robot[i, j]])
+                mutated_robot[i, j] = new_type
+            else:
+                if not is_critical_voxel(mutated_robot, i, j):
+                    mutated_robot[i, j] = 0
+
+    # For empty adjacent voxels, consider adding a new voxel.
+    for (i, j) in empty_adjacent:
+        if random.random() < mutation_rate:
+            mutated_robot[i, j] = random.choice(VOXEL_TYPES[1:])
+
+    if is_valid_robot(mutated_robot):
+        return mutated_robot
+    else:
+        return robot
+
 def crossover(parent1, parent2):
     """
     Example: mask-based crossover. For each voxel, pick from parent1 or parent2
@@ -189,6 +264,31 @@ def random_injection(population, fraction=0.2):
         population[sort_idx[i]] = create_random_robot()
     return population
 
+# ---------------- Diversity Preservation: Fitness Sharing ----------------
+def robot_distance(robot1, robot2):
+    """Compute a simple Hamming-like distance between two robot structures."""
+    # Assumes both robots have the same shape.
+    return np.sum(robot1 != robot2)
+
+def compute_shared_fitnesses(population, raw_fitnesses, sigma_share=5):
+    """
+    Adjust raw fitness scores using fitness sharing.
+    For each individual, compute:
+       f_shared(i) = f(i) / (1 + sum_{j != i} sh(d(i,j)))
+    where sh(d) = max(0, 1 - d / sigma_share) for d < sigma_share, 0 otherwise.
+    """
+    n = len(population)
+    shared = np.zeros(n)
+    for i in range(n):
+        sharing_sum = 0.0
+        for j in range(n):
+            if i == j:
+                continue
+            d = robot_distance(population[i], population[j])
+            sharing_value = max(0, 1 - d / sigma_share)
+            sharing_sum += sharing_value
+        shared[i] = raw_fitnesses[i] / (1 + sharing_sum)
+    return shared
 
 # ---------------- Main Evolutionary Loop ----------------
 best_fitness = -float('inf')
@@ -205,6 +305,13 @@ for gen in range(NUM_GENERATIONS):
     # Evaluate fitness
     population_fitness = [evaluate_fitness(robot) for robot in population]
 
+    if USE_ADAPTIVE_PARAMETER_CONTROL:
+        fitness_std = np.std(population_fitness)
+
+    if USE_DIVERSITY_PRESERVATION:
+        # Compute shared fitnesses for diversity preservation
+        shared_fitnesses = compute_shared_fitnesses(population, population_fitness, sigma_share=5)
+
     # Find best in current population
     best_idx = np.argmax(population_fitness)
     gen_best_fit = population_fitness[best_idx]
@@ -218,13 +325,23 @@ for gen in range(NUM_GENERATIONS):
     else:
         stagnation_counter += 1
 
-    print(
-        f"Gen {gen} | Best Fitness: {best_fitness:.3f} | Current Gen Best: {gen_best_fit:.3f} | Mutation Rate: {current_mutation_rate:.3f}")
+    if OUTPUT_ROBOT_GIFS:
+        capture_simulation_frame(best_robot, gen, SCENARIO, STEPS, CONTROLLER)
+
+    # Adaptive parameter control: Increase mutation rate if fitness diversity is low. This mechanism dynamically adjusts the mutation rate during the evolution by monitoring the fitness diversity, the algorithm increases dthe mutation when diversity is low.
+    if USE_ADAPTIVE_PARAMETER_CONTROL:
+        if fitness_std < STD_THRESHOLD:
+            adjustment_factor = 1 + (STD_THRESHOLD - fitness_std) / STD_THRESHOLD
+            current_mutation_rate = min(1.0, current_mutation_rate * adjustment_factor)
+
+        log(f"Gen {gen} | Best Fitness: {best_fitness:.3f} | Current Gen Best: {gen_best_fit:.3f} | Mutation Rate: {current_mutation_rate:.3f} | Fitness Std: {fitness_std:.3f}")
+
+    else:
+        log(f"Gen {gen} | Best Fitness: {best_fitness:.3f} | Current Gen Best: {gen_best_fit:.3f} | Mutation Rate: {current_mutation_rate:.3f}")
 
     # If we've been stagnant, increase mutation or inject random
     if stagnation_counter >= STAGNATION_LIMIT:
-        print(
-            f"> Stagnation reached {STAGNATION_LIMIT} generations: Increasing mutation and injecting random individuals.")
+        log(f"> Stagnation reached {STAGNATION_LIMIT} generations: Increasing mutation and injecting random individuals.")
         current_mutation_rate = min(1.0, current_mutation_rate * MUTATION_RATE_INCREASE)
         # random injection
         population = random_injection(population, RANDOM_INJECTION_FRACTION)
@@ -242,7 +359,11 @@ for gen in range(NUM_GENERATIONS):
     # Fill the rest of the new population
     # Make a copy so we don't remove from original 'population' while selecting
     pop_copy = population[:]
-    fitness_copy = population_fitness[:]
+
+    if USE_DIVERSITY_PRESERVATION:
+        fitness_copy = list(shared_fitnesses)
+    else:
+        fitness_copy = population_fitness[:]
 
     while len(new_population) < POPULATION_SIZE:
         # Parent selection
@@ -258,9 +379,16 @@ for gen in range(NUM_GENERATIONS):
         # Crossover
         child1, child2 = crossover(parent1, parent2)
 
+        # Refined Mutation
+        if USE_REFINED_MUTATE:
+            child1 = refined_mutate(child1, current_mutation_rate)
+            child2 = refined_mutate(child2, current_mutation_rate)
         # Mutation
-        child1 = mutate(child1, current_mutation_rate)
-        child2 = mutate(child2, current_mutation_rate)
+        else:
+            child1 = mutate(child1, current_mutation_rate)
+            child2 = mutate(child2, current_mutation_rate)
+
+
 
         # Add children
         new_population.append(child1)
@@ -270,8 +398,8 @@ for gen in range(NUM_GENERATIONS):
     population = new_population
 
 # After evolution, demonstrate the best robot
-print(f"\n=== EVOLUTION COMPLETE ===\nBest Fitness Found: {best_fitness}")
-print(f"Best Robot:\n{best_robot}")
+log(f"\n=== EVOLUTION COMPLETE ===\nBest Fitness Found: {best_fitness}")
+log(f"Best Robot:\n{best_robot}")
 
 # Optional: run best robot a few times, or create a GIF, etc.
 for i in range(3):
