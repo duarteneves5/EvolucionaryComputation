@@ -12,9 +12,9 @@ from fixed_controllers import *
 
 # ---- PARAMETERS ----
 NUM_GENERATIONS = 50  # Number of generations to evolve
-POPULATION_SIZE = 25  # Number of robots per generation
-NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.05))  # 5% elitism
-MUTATION_RATE = 0.2
+POPULATION_SIZE = 50  # Number of robots per generation
+NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.2))  # 20% elitism
+MUTATION_RATE = 0.05
 MIN_GRID_SIZE = (5, 5)
 MAX_GRID_SIZE = (5, 5)
 STEPS = 250
@@ -22,8 +22,7 @@ SCENARIO = 'Walker-v0'
 # For dynamic mutation adjustments
 STAGNATION_LIMIT = 5  # # of gens without improvement before we do something
 MUTATION_RATE_INCREASE = 2.0  # Factor to multiply mutation rate when stagnant
-RANDOM_INJECTION_FRACTION = 0.2  # Replace 20% of the population with random new ones if stagnant
-STD_THRESHOLD = 0.5  # Additional parameter for adaptive control based on fitness diversity:
+RANDOM_INJECTION_FRACTION = 0.1  # Replace 20% of the population with random new ones if stagnant
 
 # ---- VOXEL TYPES ----
 VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
@@ -33,10 +32,8 @@ CONTROLLER = alternating_gait
 
 # CONTROLLER = hopping_motion
 
-OUTPUT_ROBOT_GIFS = True                # this serves to output the robot gifs on the evogym so we can better
-USE_REFINED_MUTATE = False
-USE_DIVERSITY_PRESERVATION = False
-USE_ADAPTIVE_PARAMETER_CONTROL = False  # this ensures the population doesn't become too homogeneous, which is key to avoiding premature convergence.
+OUTPUT_ROBOT_GIFS = False                # this serves to output the robot gifs on the evogym so we can better
+OUTPUT_POPULATION = True
 TEST_NAME = "DEFAULT"                   # this serves for when testing for example a new feature to be easily tracked in the results folder
 
 # ------------------ Run Directory and Logger Setup ------------------
@@ -67,6 +64,24 @@ def capture_simulation_frame(robot, generation, scenario, steps, controller):
     filename = os.path.join(RUN_DIR, f"simulation_frame_gen_{generation}.gif")
 
     utils.create_gif(robot, filename=filename, scenario=scenario, steps=steps, controller=controller)
+
+# ------------------ Function to Capture All Robots Frame ------------------
+def capture_population_frames(population, generation, scenario, steps, controller):
+    """
+    For the given population, capture a simulation GIF for each robot
+    and store them in a subfolder corresponding to the current generation.
+    """
+    # Create a folder for this generation if it doesn't exist.
+    gen_folder = os.path.join(RUN_DIR, f"gen_{generation}")
+    if not os.path.exists(gen_folder):
+        os.makedirs(gen_folder)
+
+    # Loop over each robot in the population.
+    for idx, robot in enumerate(population):
+        filename = os.path.join(gen_folder, f"robot_{idx}.gif")
+        # Capture a GIF for each robot.
+        utils.create_gif(robot, filename=filename, scenario=scenario, steps=2, controller=controller)
+
 
 # ------------------ Evaluation and Variation Functions ------------------
 def evaluate_fitness(robot_structure, view=False):
@@ -270,7 +285,7 @@ def robot_distance(robot1, robot2):
     # Assumes both robots have the same shape.
     return np.sum(robot1 != robot2)
 
-def compute_shared_fitnesses(population, raw_fitnesses, sigma_share=5):
+def compute_shared_fitnesses(population, raw_fitnesses, sigma_share=10):
     """
     Adjust raw fitness scores using fitness sharing.
     For each individual, compute:
@@ -300,17 +315,11 @@ population = [create_random_robot() for _ in range(POPULATION_SIZE)]
 # Track stagnation
 stagnation_counter = 0
 current_mutation_rate = MUTATION_RATE
+prev_best_fitness = None
 
 for gen in range(NUM_GENERATIONS):
     # Evaluate fitness
     population_fitness = [evaluate_fitness(robot) for robot in population]
-
-    if USE_ADAPTIVE_PARAMETER_CONTROL:
-        fitness_std = np.std(population_fitness)
-
-    if USE_DIVERSITY_PRESERVATION:
-        # Compute shared fitnesses for diversity preservation
-        shared_fitnesses = compute_shared_fitnesses(population, population_fitness, sigma_share=5)
 
     # Find best in current population
     best_idx = np.argmax(population_fitness)
@@ -325,19 +334,22 @@ for gen in range(NUM_GENERATIONS):
     else:
         stagnation_counter += 1
 
+    # --- Increase mutation rate by 0.05 if this generation's best fitness hasn't changed ---
+    if prev_best_fitness is not None and abs(gen_best_fit - prev_best_fitness) < 1e-6:
+        current_mutation_rate = min(1.0, current_mutation_rate + 0.05)
+        log(f"> No improvement from previous generation; increased mutation rate by 0.05 to {current_mutation_rate:.3f}")
+
+    # Save the current best fitness value for the next generation.
+    prev_best_fitness = gen_best_fit
+
     if OUTPUT_ROBOT_GIFS:
         capture_simulation_frame(best_robot, gen, SCENARIO, STEPS, CONTROLLER)
 
-    # Adaptive parameter control: Increase mutation rate if fitness diversity is low. This mechanism dynamically adjusts the mutation rate during the evolution by monitoring the fitness diversity, the algorithm increases dthe mutation when diversity is low.
-    if USE_ADAPTIVE_PARAMETER_CONTROL:
-        if fitness_std < STD_THRESHOLD:
-            adjustment_factor = 1 + (STD_THRESHOLD - fitness_std) / STD_THRESHOLD
-            current_mutation_rate = min(1.0, current_mutation_rate * adjustment_factor)
+    if OUTPUT_POPULATION:
+        capture_population_frames(population, gen, SCENARIO, STEPS, CONTROLLER)
 
-        log(f"Gen {gen} | Best Fitness: {best_fitness:.3f} | Current Gen Best: {gen_best_fit:.3f} | Mutation Rate: {current_mutation_rate:.3f} | Fitness Std: {fitness_std:.3f}")
 
-    else:
-        log(f"Gen {gen} | Best Fitness: {best_fitness:.3f} | Current Gen Best: {gen_best_fit:.3f} | Mutation Rate: {current_mutation_rate:.3f}")
+    log(f"Gen {gen} | Best Fitness: {best_fitness:.3f} | Current Gen Best: {gen_best_fit:.3f} | Mutation Rate: {current_mutation_rate:.3f}")
 
     # If we've been stagnant, increase mutation or inject random
     if stagnation_counter >= STAGNATION_LIMIT:
@@ -360,33 +372,35 @@ for gen in range(NUM_GENERATIONS):
     # Make a copy so we don't remove from original 'population' while selecting
     pop_copy = population[:]
 
-    if USE_DIVERSITY_PRESERVATION:
-        fitness_copy = list(shared_fitnesses)
-    else:
-        fitness_copy = population_fitness[:]
+
+    fitness_copy = population_fitness[:]
 
     while len(new_population) < POPULATION_SIZE:
-        # Parent selection
-        parent1, idx1 = select_parent(pop_copy, fitness_copy)
-        # Remove it from the "pool" so we don't select the exact same index again
-        pop_copy.pop(idx1)
-        fitness_copy.pop(idx1)
 
-        parent2, idx2 = select_parent(pop_copy, fitness_copy)
+        # Parent selection
+        while True:
+            parent1, idx1 = select_parent(pop_copy, fitness_copy)
+            parent2, idx2 = select_parent(pop_copy, fitness_copy)
+            if idx2 != idx1:
+                break
+
+        # Parent selection
+        #parent1, idx1 = select_parent(pop_copy, fitness_copy)
+        # Remove it from the "pool" so we don't select the exact same index again
+        #pop_copy.pop(idx1)
+        #fitness_copy.pop(idx1)
+
+        #parent2, idx2 = select_parent(pop_copy, fitness_copy)
         # Important: do not pop idx2 from pop_copy yet, because removing idx1 changes indexing
         # but for simplicity, we won't re-use the same parent in one iteration, so it's okay.
 
         # Crossover
         child1, child2 = crossover(parent1, parent2)
 
-        # Refined Mutation
-        if USE_REFINED_MUTATE:
-            child1 = refined_mutate(child1, current_mutation_rate)
-            child2 = refined_mutate(child2, current_mutation_rate)
+
         # Mutation
-        else:
-            child1 = mutate(child1, current_mutation_rate)
-            child2 = mutate(child2, current_mutation_rate)
+        child1 = mutate(child1, current_mutation_rate)
+        child2 = mutate(child2, current_mutation_rate)
 
 
 
