@@ -34,7 +34,7 @@ CONTROLLER = alternating_gait
 
 OUTPUT_ROBOT_GIFS = False                # this serves to output the robot gifs on the evogym so we can better
 OUTPUT_POPULATION = True
-TEST_NAME = "DEFAULT"                   # this serves for when testing for example a new feature to be easily tracked in the results folder
+TEST_NAME = "DEFAULT"                    # this serves for when testing for example a new feature to be easily tracked in the results folder
 
 # ------------------ Run Directory and Logger Setup ------------------
 def setup_run_directory():
@@ -208,42 +208,6 @@ def mutate(robot, mutation_rate=0.1):
         return robot
 
 
-# ----- Refined Mutation Operator -----
-# This server to target changes to the robot structure more strategically by focusing on edge voxels and nearby empty cells that could become
-# part of the structure, rather then aplying random mutations uniformly across all voxels.
-# it selectively mutates parts of the structure that are more likely to yield meaningful variations while preserving connectivity and ensuring the robot remains viable.
-
-def refined_mutate(robot, mutation_rate=0.1):
-    mutated_robot = np.copy(robot)
-    x_shape, y_shape = robot.shape
-
-    # Identify edge voxels: non-empty voxels adjacent to at least one empty cell.
-    edge_indices = [(i, j) for i in range(x_shape) for j in range(y_shape)
-                    if mutated_robot[i, j] != 0 and is_adjacent_to_existing_voxel(mutated_robot, i, j)]
-
-    # Identify empty voxels adjacent to an existing voxel.
-    empty_adjacent = [(i, j) for i in range(x_shape) for j in range(y_shape)
-                      if mutated_robot[i, j] == 0 and is_adjacent_to_existing_voxel(mutated_robot, i, j)]
-
-    # Mutate edge voxels: either change type or remove.
-    for (i, j) in edge_indices:
-        if random.random() < mutation_rate:
-            if random.random() < 0.5 and not is_critical_voxel(mutated_robot, i, j):
-                new_type = random.choice([t for t in VOXEL_TYPES if t != mutated_robot[i, j]])
-                mutated_robot[i, j] = new_type
-            else:
-                if not is_critical_voxel(mutated_robot, i, j):
-                    mutated_robot[i, j] = 0
-
-    # For empty adjacent voxels, consider adding a new voxel.
-    for (i, j) in empty_adjacent:
-        if random.random() < mutation_rate:
-            mutated_robot[i, j] = random.choice(VOXEL_TYPES[1:])
-
-    if is_valid_robot(mutated_robot):
-        return mutated_robot
-    else:
-        return robot
 
 def crossover(parent1, parent2):
     """
@@ -279,31 +243,6 @@ def random_injection(population, fraction=0.2):
         population[sort_idx[i]] = create_random_robot()
     return population
 
-# ---------------- Diversity Preservation: Fitness Sharing ----------------
-def robot_distance(robot1, robot2):
-    """Compute a simple Hamming-like distance between two robot structures."""
-    # Assumes both robots have the same shape.
-    return np.sum(robot1 != robot2)
-
-def compute_shared_fitnesses(population, raw_fitnesses, sigma_share=10):
-    """
-    Adjust raw fitness scores using fitness sharing.
-    For each individual, compute:
-       f_shared(i) = f(i) / (1 + sum_{j != i} sh(d(i,j)))
-    where sh(d) = max(0, 1 - d / sigma_share) for d < sigma_share, 0 otherwise.
-    """
-    n = len(population)
-    shared = np.zeros(n)
-    for i in range(n):
-        sharing_sum = 0.0
-        for j in range(n):
-            if i == j:
-                continue
-            d = robot_distance(population[i], population[j])
-            sharing_value = max(0, 1 - d / sigma_share)
-            sharing_sum += sharing_value
-        shared[i] = raw_fitnesses[i] / (1 + sharing_sum)
-    return shared
 
 # ---------------- Main Evolutionary Loop ----------------
 best_fitness = -float('inf')
