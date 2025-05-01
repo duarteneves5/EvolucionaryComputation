@@ -20,7 +20,7 @@ MAX_GRID_SIZE = (5, 5)
 STEPS = 1000
 SCENARIO = 'BridgeWalker-v0'
 # For dynamic mutation adjustments
-STAGNATION_LIMIT = 51  # # of gens without improvement before we do something, if greater than 50 it doesnt act
+STAGNATION_LIMIT = 5  # # of gens without improvement before we do something, if greater than 50 it doesnt act
 MUTATION_RATE_INCREASE = 2.0  # Factor to multiply mutation rate when stagnant
 RANDOM_INJECTION_FRACTION = 0.1  # Replace 20% of the population with random new ones if stagnant
 
@@ -426,9 +426,9 @@ for gen in range(NUM_GENERATIONS):
         stagnation_counter += 1
 
     # --- Increase mutation rate by 0.05 if this generation's best fitness hasn't changed ---
-    if prev_best_fitness is not None and abs(gen_best_fit - prev_best_fitness) < 1e-6:
-        current_mutation_rate = min(1.0, current_mutation_rate + 0.05)
-        log(f"> No improvement from previous generation; increased mutation rate by 0.05 to {current_mutation_rate:.3f}")
+    #if prev_best_fitness is not None and abs(gen_best_fit - prev_best_fitness) < 1e-6:
+    #    current_mutation_rate = min(1.0, current_mutation_rate + 0.05)
+    #    log(f"> No improvement from previous generation; increased mutation rate by 0.05 to {current_mutation_rate:.3f}")
 
     # Save the current best fitness value for the next generation.
     prev_best_fitness = gen_best_fit
@@ -444,10 +444,10 @@ for gen in range(NUM_GENERATIONS):
 
     # If we've been stagnant, increase mutation or inject random
     if stagnation_counter >= STAGNATION_LIMIT:
-        log(f"> Stagnation reached {STAGNATION_LIMIT} generations: Increasing mutation and injecting random individuals.")
-        current_mutation_rate = min(1.0, current_mutation_rate * MUTATION_RATE_INCREASE)
+        log(f"> Stagnation reached {STAGNATION_LIMIT} generations: Increasing mutation rate by 0.05 to {current_mutation_rate:.3f}")
+        current_mutation_rate = min(1.0, current_mutation_rate + 0.05)
         # random injection
-        population = random_injection(population, RANDOM_INJECTION_FRACTION)
+        #population = random_injection(population, RANDOM_INJECTION_FRACTION)
         # reset stagnation counter so we wait for new improvements
         stagnation_counter = 0
 
