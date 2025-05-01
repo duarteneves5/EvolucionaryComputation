@@ -99,11 +99,13 @@ def apply_mutation(robot, rate):
     if MUTATION_METHOD == 'random':
         return mutate(robot, rate)
     elif MUTATION_METHOD == 'swap':
-        # single swap per robot
-        return swap_mutation(robot)
+        if random.random() < rate:
+            return swap_mutation(robot)
+        return robot
     elif MUTATION_METHOD == 'insert':
-        # single insert per robot
-        return insert_mutation(robot)
+        if random.random() < rate:
+            return insert_mutation(robot)
+        return robot
     else:
         raise ValueError(f"Unknown MUTATION_METHOD: {MUTATION_METHOD}")
 
@@ -430,14 +432,7 @@ def main_loop():
         gen_avg_fitness.append(avg_fit)
         gen_std_fitness.append(std_fit)
 
-        # 3) Per‐gen best
-        gen_best = float(np.max(population_fitness))
-        gen_best_per_gen.append(gen_best)
 
-        # 4) All‐time best
-        if gen_best > best_fitness:
-            best_fitness = gen_best
-        best_per_gen_ever.append(best_fitness)
 
         # Find best in current population
         best_idx = np.argmax(population_fitness)
@@ -451,6 +446,15 @@ def main_loop():
             current_mutation_rate = MUTATION_RATE  # reset to default
         else:
             stagnation_counter += 1
+
+        # 3) Per‐gen best
+        gen_best = float(np.max(population_fitness))
+        gen_best_per_gen.append(gen_best)
+
+        # 4) All‐time best
+        if gen_best > best_fitness:
+            best_fitness = gen_best
+        best_per_gen_ever.append(best_fitness)
 
         # --- Increase mutation rate by 0.05 if this generation's best fitness hasn't changed ---
         if prev_best_fitness is not None and abs(gen_best_fit - prev_best_fitness) < 1e-6:
@@ -468,7 +472,7 @@ def main_loop():
 
 
         log(f"Gen {gen} | Best Fitness: {best_fitness:.3f} | Current Gen Best: {gen_best_fit:.3f} | Mutation Rate: {current_mutation_rate:.3f}")
-        log(f"Gen {gen:2d} | Best: {gen_best_fit:.3f} | Avg: {avg_fit:.3f} ± {std_fit:.3f} | All‐Time Best: {best_fitness:.3f} | MutRate: {current_mutation_rate:.3f}")
+        log(f"Gen {gen:2d} | Best: {gen_best_fit:.3f} | Avg: {avg_fit:.3f} +- {std_fit:.3f} | All-Time Best: {best_fitness:.3f} | MutRate: {current_mutation_rate:.3f}")
         # If we've been stagnant, increase mutation or inject random
         if stagnation_counter >= STAGNATION_LIMIT:
             log(f"> Stagnation reached {STAGNATION_LIMIT} generations: Increasing mutation and injecting random individuals.")

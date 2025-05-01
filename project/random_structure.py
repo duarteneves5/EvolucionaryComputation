@@ -94,11 +94,13 @@ def apply_mutation(robot, rate):
     if MUTATION_METHOD == 'random':
         return mutate(robot, rate)
     elif MUTATION_METHOD == 'swap':
-        # single swap per robot
-        return swap_mutation(robot)
+        if random.random() < rate:
+            return swap_mutation(robot)
+        return robot
     elif MUTATION_METHOD == 'insert':
-        # single insert per robot
-        return insert_mutation(robot)
+        if random.random() < rate:
+            return insert_mutation(robot)
+        return robot
     else:
         raise ValueError(f"Unknown MUTATION_METHOD: {MUTATION_METHOD}")
 
