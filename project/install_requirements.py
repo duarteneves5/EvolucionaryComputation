@@ -8,7 +8,9 @@ def install_requirements():
         "numpy==1.23.5",  # Numerical computing
         "gymnasium==0.28",  # OpenAI Gym for RL environments
         "evogym==2.0.0",  # EvoGym for evolutionary robotics
-        "imageio==2.36.1"
+        "imageio==2.36.1",
+        "matplotlib==3.10.1",
+        "pillow==11.2.1",
     ]
     
     print("Installing required packages...")

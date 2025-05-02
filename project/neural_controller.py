@@ -47,3 +47,8 @@ def initialize_weights(m):
     if isinstance(m, nn.Linear):
         nn.init.xavier_uniform_(m.weight)  # Xavier initialization
         nn.init.constant_(m.bias, 0.1)  # Small bias
+
+
+def save_weights(brain, filename='best_weights.pth'):
+    torch.save(brain.state_dict(), filename)
+    print(f"Saved weights to {filename}")
