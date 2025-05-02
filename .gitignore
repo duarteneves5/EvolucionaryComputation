@@ -1,2 +1,9 @@
 **/.idea/
 **/__pycache__/
+**/venv
+
+**/*.gif
+**/*.pth
+**/*.txt
+**/*.log
+**/*.csv
