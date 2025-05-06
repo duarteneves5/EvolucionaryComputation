@@ -291,90 +291,92 @@ def main():
     best_weights = None
     POPULATION_SIZE = 50
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_root = Path("results") / f"RC_{SCENARIO}_{POPULATION_SIZE}pop_{STEPS}step_{timestamp}"
-    results_root.mkdir(parents=True, exist_ok=True)
+    for SCENARIO in ["DownStepper-v0", "ObstacleTraverser-v0"]:
+        for _ in range(5):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            results_root = Path("results") / f"RC_{SCENARIO}_{POPULATION_SIZE}pop_{STEPS}step_{timestamp}"
+            results_root.mkdir(parents=True, exist_ok=True)
 
-    # CSV file for generation statistics
-    csv_path = results_root / "generation_log.csv"
-    csv_file = open(csv_path, mode="w", newline="")
-    csv_writer = csv.writer(csv_file)
-    csv_writer.writerow([  # header
-        "generation",
-        "gen_best_fitness",
-        "global_best_fitness",
-        "mean_fitness",
-        # fitness components:
-        "distance",
-        "efficiency",
-        "survival",
-        "speed"
-    ])
+            # CSV file for generation statistics
+            csv_path = results_root / "generation_log.csv"
+            csv_file = open(csv_path, mode="w", newline="")
+            csv_writer = csv.writer(csv_file)
+            csv_writer.writerow([  # header
+                "generation",
+                "gen_best_fitness",
+                "global_best_fitness",
+                "mean_fitness",
+                # fitness components:
+                "distance",
+                "efficiency",
+                "survival",
+                "speed"
+            ])
 
-    path_of_means = []
-    all_samples = []
-    best_fitness_history = []
-    try:
-        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-            for generation in range(NUM_GENERATIONS):
-                start = time.time()
-                population = [[np.random.randn(*param.shape) for param in brain.parameters()] for _ in range(POPULATION_SIZE)]
-                fitnesses = list(executor.map(evaluate_fitness, population))
-                fitness_mean = np.mean(fitnesses)
+            path_of_means = []
+            all_samples = []
+            best_fitness_history = []
+            try:
+                with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+                    for generation in range(NUM_GENERATIONS):
+                        start = time.time()
+                        population = [[np.random.randn(*param.shape) for param in brain.parameters()] for _ in range(POPULATION_SIZE)]
+                        fitnesses = list(executor.map(evaluate_fitness, population))
+                        fitness_mean = np.mean(fitnesses)
 
-                xs, ys = [], []
-                for ind in population:
-                    flat = np.concatenate([p.flatten() for p in ind])
-                    x, y = flat[0], flat[1]  # 2‑D projection
-                    all_samples.append([generation, x, y])
-                    xs.append(x)
-                    ys.append(y)
-                path_of_means.append([np.mean(xs), np.mean(ys)])
+                        xs, ys = [], []
+                        for ind in population:
+                            flat = np.concatenate([p.flatten() for p in ind])
+                            x, y = flat[0], flat[1]  # 2‑D projection
+                            all_samples.append([generation, x, y])
+                            xs.append(x)
+                            ys.append(y)
+                        path_of_means.append([np.mean(xs), np.mean(ys)])
 
-                best_fitness_idx = np.argsort(fitnesses)[-1]
+                        best_fitness_idx = np.argsort(fitnesses)[-1]
 
-                if fitnesses[best_fitness_idx] > best_fitness:
-                    best_fitness = fitnesses[best_fitness_idx]
-                    best_weights = population[best_fitness_idx]
+                        if fitnesses[best_fitness_idx] > best_fitness:
+                            best_fitness = fitnesses[best_fitness_idx]
+                            best_weights = population[best_fitness_idx]
 
-                fitness, distance, efficiency, survival, speed = evaluate_fitness(population[best_fitness_idx], return_components=True)
-                best_fitness_history.append(fitness)
-                csv_writer.writerow([
-                    generation,
-                    f"{fitness:.6f}",
-                    f"{best_fitness:.6f}",
-                    f"{fitness_mean:.6f}",
-                    f"{distance:.6f}",
-                    f"{efficiency:.6f}",
-                    f"{survival:.6f}",
-                    f"{speed:.6f}"
-                ])
-                csv_file.flush()
+                        fitness, distance, efficiency, survival, speed = evaluate_fitness(population[best_fitness_idx], return_components=True)
+                        best_fitness_history.append(fitness)
+                        csv_writer.writerow([
+                            generation,
+                            f"{fitness:.6f}",
+                            f"{best_fitness:.6f}",
+                            f"{fitness_mean:.6f}",
+                            f"{distance:.6f}",
+                            f"{efficiency:.6f}",
+                            f"{survival:.6f}",
+                            f"{speed:.6f}"
+                        ])
+                        csv_file.flush()
 
-                if generation % 10 == 0:
-                    gif_path = results_root / f"gen_{generation:03d}_best.gif"
-                    create_gif_of_best_policy(best_weights, filename=str(gif_path))
+                        if generation % 10 == 0:
+                            gif_path = results_root / f"gen_{generation:03d}_best.gif"
+                            create_gif_of_best_policy(best_weights, filename=str(gif_path))
 
-                end = time.time()
-                length = end - start
-                print(f"[GEN {generation + 1}/{NUM_GENERATIONS}] Best Fitness: {fitnesses[best_fitness_idx]} / Took {length:.2f} seconds")
-
-
-    except KeyboardInterrupt:
-        set_weights(brain, best_weights)
-        save_weights(brain, filename=results_root / "best_weights.pth")
-
-    finally:
-        executor.shutdown()
-        csv_file.close()
+                        end = time.time()
+                        length = end - start
+                        print(f"[GEN {generation + 1}/{NUM_GENERATIONS}] Best Fitness: {fitnesses[best_fitness_idx]} / Took {length:.2f} seconds")
 
 
-    path_of_means = np.array(path_of_means)
-    all_samples = np.array(all_samples)
+            except KeyboardInterrupt:
+                set_weights(brain, best_weights)
+                save_weights(brain, filename=results_root / "best_weights.pth")
+
+            finally:
+                executor.shutdown()
+                csv_file.close()
 
 
-    plot_fitness_over_generations(best_fitness_history, path_of_means, filename=str(results_root / "best_fitness_over_generations.png"))
-    animate_ackley_optimization(all_samples, path_of_means, filename=str(results_root / "ackley_animation.gif"))
+            path_of_means = np.array(path_of_means)
+            all_samples = np.array(all_samples)
+
+
+            plot_fitness_over_generations(best_fitness_history, path_of_means, filename=str(results_root / "best_fitness_over_generations.png"))
+            animate_ackley_optimization(all_samples, path_of_means, filename=str(results_root / "ackley_animation.gif"))
 
 
 if __name__ == "__main__":
