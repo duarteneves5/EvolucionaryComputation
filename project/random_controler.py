@@ -15,14 +15,12 @@ from utils import (
 )
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+import secrets
+
 
 NUM_GENERATIONS = 100
 STEPS = 1500
 SCENARIO = 'DownStepper-v0'
-SEED = 42
-np.random.seed(SEED)
-random.seed(SEED)
-
 
 robot_structure = np.array([ 
 [1,3,1,0,0],
@@ -31,7 +29,6 @@ robot_structure = np.array([
 [3,0,0,3,2],
 [0,0,0,0,2]
 ])
-
 
 connectivity = get_full_connectivity(robot_structure)
 env = gym.make(SCENARIO, max_episode_steps=STEPS, body=robot_structure, connections=connectivity)
@@ -293,6 +290,10 @@ def main():
 
     for SCENARIO in ["DownStepper-v0", "ObstacleTraverser-v0"]:
         for _ in range(5):
+            SEED = secrets.randbelow(1_000_000_000)
+            np.random.seed(SEED)
+            random.seed(SEED)
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             results_root = Path("results") / f"RC_{SCENARIO}_{POPULATION_SIZE}pop_{STEPS}step_{timestamp}"
             results_root.mkdir(parents=True, exist_ok=True)
