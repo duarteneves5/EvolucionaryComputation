@@ -20,9 +20,9 @@ from utils import (
 
 
 NUM_WORKERS = os.cpu_count()
-STEPS = 1000
-SCENARIO = 'DownStepper-v0'
-#SCENARIO = 'ObstacleTraverser-v0'
+STEPS = 1500
+#SCENARIO = 'DownStepper-v0'
+SCENARIO = 'ObstacleTraverser-v0'
 SEED = 42
 np.random.seed(SEED)
 random.seed(SEED)
@@ -355,41 +355,19 @@ class CMAESOptimizer:
         return pop, fitnesses
 
 
-    """
-    path_of_means.append(m.copy())
-    for i in range(POPULATION_SIZE):
-        all_samples.append((generation, population[i, 0], population[i, 1]))
-    def optimize(
-            self,
-            population,
-            best_indices,
-            previous_gen_best_fitness,
-            current_gen_best_fitness,
-    ):
-        '''
-        new_m = np.mean([population[i] for i in best_indices], axis=0)
-
-        new_C = np.zeros_like(self.C)
-        for i in best_indices:
-            diff = population[i] - new_m
-            new_C += np.outer(diff, diff)
-        new_C /= self.mu
-
-        self.update_spread(previous_gen_best_fitness, current_gen_best_fitness)
-
-        self.C = (1 - self.spread) * self.C + self.spread * new_C
-        self.m = new_m
-        '''
-        self.mean = np.mean(population)
-    """
-
-
 # ---- CMA-ES SEARCH ALGORITHM ----
 best_fitness = -np.inf
 best_weights = None
 
+POPULATION_SIZE = int(4 + 3*np.log(len(get_weights(brain, flatten=True))))
+print(f"Population Size: {POPULATION_SIZE}")
+mu = POPULATION_SIZE // 2
+NUM_GENERATIONS = POPULATION_SIZE * 10
+NUM_GENERATIONS = 100
+print(f"Number of Generations: {NUM_GENERATIONS}")
+
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-results_root = Path("results") / f"run_{timestamp}"
+results_root = Path("results") / f"EC_{SCENARIO}_{POPULATION_SIZE}pop_{STEPS}step_{timestamp}"
 results_root.mkdir(parents=True, exist_ok=True)
 
 # CSV file for generation statistics
@@ -408,12 +386,6 @@ csv_writer.writerow([  # header
     "survival",
     "speed"
 ])
-
-POPULATION_SIZE = int(4 + 3*np.log(len(get_weights(brain, flatten=True))))
-print(f"Population Size: {POPULATION_SIZE}")
-mu = POPULATION_SIZE // 2
-NUM_GENERATIONS = POPULATION_SIZE * 10
-print(f"Number of Generations: {NUM_GENERATIONS}")
 
 optimizer = CMAESOptimizer(brain, POPULATION_SIZE, evaluate_fitness)
 
@@ -446,7 +418,7 @@ try:
 
         if generation % 10 == 0:
             gif_path = results_root / f"gen_{generation:03d}_best.gif"
-            create_gif_of_best_policy(best_weights, filename=str(gif_path), fps=30)
+            create_gif_of_best_policy(best_weights, filename=str(gif_path))
 
         end = time.time()
         length = end - start
@@ -471,8 +443,6 @@ print(f"Best Fitness: {best_fitness}")
 
 plot_fitness_over_generations(optimizer.best_fitness_history, optimizer.mean_fitness_history, filename=str(results_root / "best_fitness_over_generations.png"))
 
-#create_gif_of_best_policy(best_weights, filename="best_policy.gif", fps=30)
-#visualize_policy(get_weights(brain))
-animate_ackley_optimization(all_samples, path_of_means, filename=str(results_root / "best_fitness_over_generations.gif"))
+animate_ackley_optimization(all_samples, path_of_means, filename=str(results_root / "ackley_animation.gif"))
 
 
