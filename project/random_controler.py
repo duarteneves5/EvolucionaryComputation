@@ -172,20 +172,52 @@ def animate_ackley_optimization(all_samples,
     print(f"Animation saved to {filename}")
 
 
+CURRICULUM_STEPS = STEPS * 0.2
+def ramp_factor(generation: int) -> float:
+    """
+    Linear schedule in [0, 1].
+    gen 0 .. CURRICULUM_STEPS :  ramps up
+    beyond                 :  stays at 1.0
+    """
+    return min(1.0, generation / CURRICULUM_STEPS)
+
+
+def evaluate_fitness_curriculum(weights, generation, return_components=False, view=False):
+    """
+    Calls evaluate_fitness with
+    curriculum-scaled survival / fall weights
+    """
+    r = ramp_factor(generation)
+
+    return evaluate_fitness(
+        weights,
+        w_distance=0.5,
+        w_efficiency=0.25,
+        w_speed=0.25,
+        # scaled terms
+        w_survival=r * 50,
+        w_fall    =r * 100,
+        return_components=return_components,
+        view=view,
+    )
+
 
 # ---- FITNESS FUNCTION ----
 def evaluate_fitness(
         weights,
         view=False,
-        w_distance=1,
-        w_efficiency=0.2,
-        w_jerk=0.0,
-        w_upright=0.0,
-        w_speed=0.3,
-        w_survival=0.1,
+        w_distance=0.5,
+        w_efficiency=0.25,
+        w_speed=0.25,
+        w_survival=0.0,
+        w_fall=0.0,
         return_components=False
 ):
-    set_weights(brain, weights)  # Load weights into the network
+    DIST_REF = 80.0 # best possible distance
+    EFF_REF = 0.1  # good efficiency
+    SPD_REF = 0.02  # good speed in m/s
+
+    set_weights(brain, weights, reconstruct_weights=True)  # Load weights into the network
     env = gym.make(SCENARIO, max_episode_steps=STEPS, body=robot_structure, connections=connectivity)
     sim = env.sim
 
@@ -203,6 +235,8 @@ def evaluate_fitness(
     jerk_sum = 0.0
     upright_accum = 0.0
     survived_steps = STEPS
+    fell_over = False
+    MAX_TILT = np.pi / 4
 
     for t in range(1, STEPS+1):
         # Update actuation before stepping
@@ -228,7 +262,10 @@ def evaluate_fitness(
 
         # posture: robot tilt w.r.t. x‐axis
         angle = sim.object_orientation_at_time(sim.get_time(), 'robot')
-        upright_accum += abs(np.cos(angle))  # 1.0 if perfectly aligned :contentReference[oaicite:0]{index=0}
+        if abs(angle) > MAX_TILT:
+            fell_over = True
+
+        upright_accum += abs(np.cos(angle))  # 1.0 if perfectly aligned
 
         if view:
             viewer.render('screen')
@@ -238,28 +275,17 @@ def evaluate_fitness(
             survived_steps = t
             break
 
-
     tf = sim.get_time()
     end_com = sim.object_pos_at_time(tf, 'robot').mean(axis=1)
     distance = end_com[0] - start_com[0] # allow negative distance values for backwards moving penalties
-
-    # normalized energy per meter (avoid div0)
     efficiency = distance / (total_energy + 1e-6) * 1e6
-    #print(efficiency)
-
-    #if total_actuation < STEPS * output_size * 0.01:
-    #    actuation_penalty = -100.0
-    #else:
-    #    actuation_penalty = 0.0
-
-    # average upright score
-    upright = upright_accum / survived_steps
-
-    # survival bonus
-    survival_bonus = (survived_steps / STEPS)
-
-    #survival_bonus = (survived_steps / STEPS) * w_survival
     speed = distance / max(1, tf)
+    survival_ratio = (survived_steps / STEPS)
+
+    dist_norm = np.clip(distance / DIST_REF, 0.0, 1.0)
+    eff_norm = np.clip(efficiency / EFF_REF, 0.0, 1.0)
+    spd_norm = np.clip(speed / SPD_REF, 0.0, 1.0)
+    #death_penalty = (1 - survival_ratio) * 50.0
 
     if view:
         viewer.close()
@@ -267,18 +293,17 @@ def evaluate_fitness(
     env.close()
 
     fitness = (
-        w_distance * distance
-        + w_efficiency * efficiency
-        - w_jerk * jerk_sum
-        + w_upright * upright
-        + w_survival * survival_bonus
-        + w_speed * speed
-        #+ actuation_penalty
+        w_distance * dist_norm +
+        w_efficiency * eff_norm +
+        w_speed * spd_norm
+        - w_survival * (1 - survival_ratio)
     )
-    #t_reward = w_distance*distance - w_energy*energy + w_speed*speed + survival_bonus
-    #print(f"reward: {t_reward} - distance: {distance} - average speed: {average_speed} - energy: {energy}")
+
+    if fell_over:
+        fitness -= w_fall
+
     if return_components:
-        return fitness, w_distance * distance, w_efficiency * efficiency, w_survival * survival_bonus, w_speed * speed
+        return fitness, w_distance * dist_norm, w_efficiency * eff_norm, w_speed * spd_norm, w_survival * (1 - survival_ratio), int(fell_over) * w_fall
 
     return fitness
 
@@ -288,96 +313,97 @@ def main():
     best_weights = None
     POPULATION_SIZE = 50
 
-    for SCENARIO in ["DownStepper-v0", "ObstacleTraverser-v0"]:
-        for _ in range(5):
-            SEED = secrets.randbelow(1_000_000_000)
-            np.random.seed(SEED)
-            random.seed(SEED)
+    for _ in range(5):
+        SEED = secrets.randbelow(1_000_000_000)
+        np.random.seed(SEED)
+        random.seed(SEED)
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            results_root = Path("results") / f"RC_{SCENARIO}_{POPULATION_SIZE}pop_{STEPS}step_{timestamp}"
-            results_root.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        results_root = Path("results") / f"RC_{SCENARIO}_{POPULATION_SIZE}pop_{STEPS}step_{timestamp}"
+        results_root.mkdir(parents=True, exist_ok=True)
 
-            # CSV file for generation statistics
-            csv_path = results_root / "generation_log.csv"
-            csv_file = open(csv_path, mode="w", newline="")
-            csv_writer = csv.writer(csv_file)
-            csv_writer.writerow([  # header
-                "generation",
-                "gen_best_fitness",
-                "global_best_fitness",
-                "mean_fitness",
-                # fitness components:
-                "distance",
-                "efficiency",
-                "survival",
-                "speed"
-            ])
+        # CSV file for generation statistics
+        csv_path = results_root / "generation_log.csv"
+        csv_file = open(csv_path, mode="w", newline="")
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow([  # header
+            "generation",
+            "gen_best_fitness",
+            "global_best_fitness",
+            "mean_fitness",
+            # fitness components:
+            "distance",
+            "efficiency",
+            "speed",
+            "survival_penalty",
+            "fell_over_penalty"
+        ])
 
-            path_of_means = []
-            all_samples = []
-            best_fitness_history = []
-            try:
-                with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-                    for generation in range(NUM_GENERATIONS):
-                        start = time.time()
-                        population = [[np.random.randn(*param.shape) for param in brain.parameters()] for _ in range(POPULATION_SIZE)]
-                        fitnesses = list(executor.map(evaluate_fitness, population))
-                        fitness_mean = np.mean(fitnesses)
+        path_of_means = []
+        all_samples = []
+        best_fitness_history = []
+        try:
+            with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+                for generation in range(NUM_GENERATIONS):
+                    start = time.time()
+                    population = [[np.random.randn(*param.shape) for param in brain.parameters()] for _ in range(POPULATION_SIZE)]
+                    fitnesses = list(executor.map(evaluate_fitness, population))
+                    fitness_mean = np.mean(fitnesses)
 
-                        xs, ys = [], []
-                        for ind in population:
-                            flat = np.concatenate([p.flatten() for p in ind])
-                            x, y = flat[0], flat[1]  # 2‑D projection
-                            all_samples.append([generation, x, y])
-                            xs.append(x)
-                            ys.append(y)
-                        path_of_means.append([np.mean(xs), np.mean(ys)])
+                    xs, ys = [], []
+                    for ind in population:
+                        flat = np.concatenate([p.flatten() for p in ind])
+                        x, y = flat[0], flat[1]  # 2‑D projection
+                        all_samples.append([generation, x, y])
+                        xs.append(x)
+                        ys.append(y)
+                    path_of_means.append([np.mean(xs), np.mean(ys)])
 
-                        best_fitness_idx = np.argsort(fitnesses)[-1]
+                    best_fitness_idx = np.argsort(fitnesses)[-1]
 
-                        if fitnesses[best_fitness_idx] > best_fitness:
-                            best_fitness = fitnesses[best_fitness_idx]
-                            best_weights = population[best_fitness_idx]
+                    if fitnesses[best_fitness_idx] > best_fitness:
+                        best_fitness = fitnesses[best_fitness_idx]
+                        best_weights = population[best_fitness_idx]
 
-                        fitness, distance, efficiency, survival, speed = evaluate_fitness(population[best_fitness_idx], return_components=True)
-                        best_fitness_history.append(fitness)
-                        csv_writer.writerow([
-                            generation,
-                            f"{fitness:.6f}",
-                            f"{best_fitness:.6f}",
-                            f"{fitness_mean:.6f}",
-                            f"{distance:.6f}",
-                            f"{efficiency:.6f}",
-                            f"{survival:.6f}",
-                            f"{speed:.6f}"
-                        ])
-                        csv_file.flush()
+                    fitness, distance, efficiency, speed, survival, fell_over = evaluate_fitness(population[best_fitness_idx], return_components=True)
+                    best_fitness_history.append(fitness)
+                    csv_writer.writerow([
+                        generation,
+                        f"{fitness:.6f}",
+                        f"{best_fitness:.6f}",
+                        f"{fitness_mean:.6f}",
+                        f"{distance:.6f}",
+                        f"{efficiency:.6f}",
+                        f"{speed:.6f}",
+                        f"{survival:.6f}",
+                        f"{fell_over:.6f}",
+                    ])
+                    csv_file.flush()
 
-                        if generation % 10 == 0:
-                            gif_path = results_root / f"gen_{generation:03d}_best.gif"
-                            create_gif_of_best_policy(best_weights, filename=str(gif_path))
+                    if generation % 10 == 0:
+                        gif_path = results_root / f"gen_{generation:03d}_best.gif"
+                        create_gif_of_best_policy(best_weights, filename=str(gif_path))
 
-                        end = time.time()
-                        length = end - start
-                        print(f"[GEN {generation + 1}/{NUM_GENERATIONS}] Best Fitness: {fitnesses[best_fitness_idx]} / Took {length:.2f} seconds")
-
-
-            except KeyboardInterrupt:
-                set_weights(brain, best_weights)
-                save_weights(brain, filename=results_root / "best_weights.pth")
-
-            finally:
-                executor.shutdown()
-                csv_file.close()
+                    end = time.time()
+                    length = end - start
+                    print(f"[GEN {generation + 1}/{NUM_GENERATIONS}] Best Fitness: {fitnesses[best_fitness_idx]} / Took {length:.2f} seconds")
 
 
-            path_of_means = np.array(path_of_means)
-            all_samples = np.array(all_samples)
+        except KeyboardInterrupt:
+            set_weights(brain, best_weights)
+            save_weights(brain, filename=results_root / "best_weights.pth")
+
+        finally:
+            executor.shutdown()
+            csv_file.close()
 
 
-            plot_fitness_over_generations(best_fitness_history, path_of_means, filename=str(results_root / "best_fitness_over_generations.png"))
-            animate_ackley_optimization(all_samples, path_of_means, filename=str(results_root / "ackley_animation.gif"))
+        path_of_means = np.array(path_of_means)
+        all_samples = np.array(all_samples)
+
+
+        plot_fitness_over_generations(best_fitness_history, path_of_means, filename=str(results_root / "best_fitness_over_generations.png"))
+        animate_ackley_optimization(all_samples, path_of_means, filename=str(results_root / "ackley_animation.gif"))
 
 
 if __name__ == "__main__":

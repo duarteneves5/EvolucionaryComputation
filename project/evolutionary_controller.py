@@ -11,10 +11,9 @@ import time
 import csv
 from pathlib import Path
 from datetime import datetime
-import matplotlib.pyplot as plt
 import imageio
-import imageio.v3 as iio
 import secrets
+import itertools
 
 from utils import (
     plot_fitness_over_generations,
@@ -24,8 +23,8 @@ from utils import (
 
 NUM_WORKERS = os.cpu_count()
 STEPS = 1500
-#SCENARIO = 'DownStepper-v0'
-SCENARIO = 'ObstacleTraverser-v0'
+SCENARIO = 'DownStepper-v0'
+#SCENARIO = 'ObstacleTraverser-v0'
 
 
 robot_structure = np.array([
@@ -102,19 +101,51 @@ output_size = env.action_space.shape[0]  # Action size
 
 brain = NeuralController(input_size, output_size, init_params=True)
 
+CURRICULUM_STEPS = STEPS * 0.2
+def ramp_factor(generation: int) -> float:
+    """
+    Linear schedule in [0, 1].
+    gen 0 .. CURRICULUM_STEPS :  ramps up
+    beyond                 :  stays at 1.0
+    """
+    return min(1.0, generation / CURRICULUM_STEPS)
+
+
+def evaluate_fitness_curriculum(weights, generation, return_components=False, view=False):
+    """
+    Calls evaluate_fitness with
+    curriculum-scaled survival / fall weights
+    """
+    r = ramp_factor(generation)
+
+    return evaluate_fitness(
+        weights,
+        w_distance=0.5,
+        w_efficiency=0.25,
+        w_speed=0.25,
+        # scaled terms
+        w_survival=r * 50,
+        w_fall    =r * 100,
+        return_components=return_components,
+        view=view,
+    )
+
 
 # ---- FITNESS FUNCTION ----
 def evaluate_fitness(
         weights,
         view=False,
-        w_distance=1,
-        w_efficiency=0.2,
-        w_jerk=0.0,
-        w_upright=0.0,
-        w_speed=0.3,
-        w_survival=0.1,
+        w_distance=0.5,
+        w_efficiency=0.25,
+        w_speed=0.25,
+        w_survival=0.0,
+        w_fall=0.0,
         return_components=False
 ):
+    DIST_REF = 80.0 # best possible distance
+    EFF_REF = 0.6  # good efficiency
+    SPD_REF = 0.07  # good speed in m/s
+
     set_weights(brain, weights, reconstruct_weights=True)  # Load weights into the network
     env = gym.make(SCENARIO, max_episode_steps=STEPS, body=robot_structure, connections=connectivity)
     sim = env.sim
@@ -133,6 +164,8 @@ def evaluate_fitness(
     jerk_sum = 0.0
     upright_accum = 0.0
     survived_steps = STEPS
+    fell_over = False
+    MAX_TILT = 99999999
 
     for t in range(1, STEPS+1):
         # Update actuation before stepping
@@ -158,7 +191,9 @@ def evaluate_fitness(
 
         # posture: robot tilt w.r.t. x‐axis
         angle = sim.object_orientation_at_time(sim.get_time(), 'robot')
-        upright_accum += abs(np.cos(angle))  # 1.0 if perfectly aligned :contentReference[oaicite:0]{index=0}
+        fell_over = abs(angle) > MAX_TILT
+
+        upright_accum += abs(np.cos(angle))  # 1.0 if perfectly aligned
 
         if view:
             viewer.render('screen')
@@ -168,28 +203,17 @@ def evaluate_fitness(
             survived_steps = t
             break
 
-
     tf = sim.get_time()
     end_com = sim.object_pos_at_time(tf, 'robot').mean(axis=1)
     distance = end_com[0] - start_com[0] # allow negative distance values for backwards moving penalties
-
-    # normalized energy per meter (avoid div0)
     efficiency = distance / (total_energy + 1e-6) * 1e6
-    #print(efficiency)
-
-    #if total_actuation < STEPS * output_size * 0.01:
-    #    actuation_penalty = -100.0
-    #else:
-    #    actuation_penalty = 0.0
-
-    # average upright score
-    upright = upright_accum / survived_steps
-
-    # survival bonus
-    survival_bonus = (survived_steps / STEPS)
-
-    #survival_bonus = (survived_steps / STEPS) * w_survival
     speed = distance / max(1, tf)
+    survival_ratio = (survived_steps / STEPS)
+
+    dist_norm = np.clip(distance / DIST_REF, 0.0, 1.0)
+    eff_norm = np.clip(efficiency / EFF_REF, 0.0, 1.0)
+    spd_norm = np.clip(speed / SPD_REF, 0.0, 1.0)
+    #death_penalty = (1 - survival_ratio) * 50.0
 
     if view:
         viewer.close()
@@ -197,18 +221,17 @@ def evaluate_fitness(
     env.close()
 
     fitness = (
-        w_distance * distance
-        + w_efficiency * efficiency
-        - w_jerk * jerk_sum
-        + w_upright * upright
-        + w_survival * survival_bonus
-        + w_speed * speed
-        #+ actuation_penalty
+        w_distance * dist_norm +
+        w_efficiency * eff_norm +
+        w_speed * spd_norm
+        - w_survival * (1 - survival_ratio)
     )
-    #t_reward = w_distance*distance - w_energy*energy + w_speed*speed + survival_bonus
-    #print(f"reward: {t_reward} - distance: {distance} - average speed: {average_speed} - energy: {energy}")
+
+    if fell_over:
+        fitness -= w_fall
+
     if return_components:
-        return fitness, w_distance * distance, w_efficiency * efficiency, w_survival * survival_bonus, w_speed * speed
+        return fitness, w_distance * dist_norm, w_efficiency * eff_norm, w_speed * spd_norm, w_survival * (1 - survival_ratio), int(fell_over) * w_fall, total_energy
 
     return fitness
 
@@ -236,12 +259,12 @@ class CMAESOptimizer:
         print("μ_eff =", mu_eff)
 
         self.INITIAL_SPREAD = 0.7
-        self.MIN_SPREAD = 0.01
+        self.MIN_SPREAD = 0.05
         self.MAX_SPREAD = 1.0
-        self.COOLING_RATE = 0.7
+        self.COOLING_RATE = 0.85
         self.STAGNATION_WINDOW = 5  # generations without improvement
         self.STAGNATION_BOOST = 1.2  # spread multiplier on stagnation
-        self.IMPROVEMENT_THRESHOLD = 0.2  # minimum relative improvement
+        self.IMPROVEMENT_THRESHOLD = 0.05  # minimum relative improvement
         self.stagnation_counter = 0
         self.spread = self.INITIAL_SPREAD
         #self.c_cov = 2 / ((len(self.get_mean_vector(brain)) + 2) ** 2)
@@ -345,7 +368,11 @@ class CMAESOptimizer:
         for i in range(self.pop_size):
             self.all_samples.append((generation, pop[i, 0], pop[i, 1]))
 
-        fitnesses = list(self.executor.map(self.fitness_function, pop))
+        fitnesses = list(self.executor.map(
+            self.fitness_function,
+            pop,
+            itertools.repeat(generation))
+        )
 
         self.previous_gen_best_fitness = self.current_gen_best_fitness
         self.current_gen_best_fitness = max(fitnesses)
@@ -372,6 +399,7 @@ def main():
     for SCENARIO in ["DownStepper-v0", "ObstacleTraverser-v0"]:
         for _ in range(5):
             SEED = secrets.randbelow(1_000_000_000)
+            print(f"SEEDING WITH {SEED}")
             np.random.seed(SEED)
             random.seed(SEED)
 
@@ -392,11 +420,13 @@ def main():
                 # fitness components:
                 "distance",
                 "efficiency",
+                "speed",
                 "survival",
-                "speed"
+                "fell_over",
+                "total_energy"
             ])
 
-            optimizer = CMAESOptimizer(brain, POPULATION_SIZE, evaluate_fitness)
+            optimizer = CMAESOptimizer(brain, POPULATION_SIZE, evaluate_fitness_curriculum)
 
             try:
                 for generation in range(NUM_GENERATIONS):
@@ -409,7 +439,7 @@ def main():
                         best_fitness = gen_best
                         best_weights = pop[best_idx]
 
-                    fitness, distance, efficiency, survival, speed = evaluate_fitness(pop[best_idx], return_components=True)
+                    fitness, distance, efficiency, speed, survival, fell_over, total_energy = evaluate_fitness_curriculum(pop[best_idx], generation, return_components=True)
 
                     mean_fit = optimizer.mean_fitness_history[-1]
                     csv_writer.writerow([
@@ -420,8 +450,10 @@ def main():
                         f"{mean_fit:.6f}",
                         f"{distance:.6f}",
                         f"{efficiency:.6f}",
+                        f"{speed:.6f}",
                         f"{survival:.6f}",
-                        f"{speed:.6f}"
+                        f"{fell_over:.6f}",
+                        f"{total_energy:.6f}"
                     ])
                     csv_file.flush()
 
