@@ -13,7 +13,7 @@ import utils
 from fixed_controllers import *
 
 import matplotlib.pyplot as plt
-#import secrets
+import secrets
 
 # ---- PARAMETERS ----
 NUM_GENERATIONS = 50  # Number of generations to evolve
@@ -23,7 +23,7 @@ MUTATION_RATE = 0.2
 MIN_GRID_SIZE = (5, 5)
 MAX_GRID_SIZE = (5, 5)
 STEPS = 400
-SCENARIO = 'Walker-v0'
+SCENARIO = 'BridgeWalker-v0'
 # For dynamic mutation adjustments
 STAGNATION_LIMIT = 5  # # of gens without improvement before we do something, if greater than 50 it doesnt act
 MUTATION_RATE_INCREASE = 2.0  # Factor to multiply mutation rate when stagnant
@@ -45,7 +45,7 @@ OUTPUT_POPULATION = True
 MUTATION_METHOD = 'random'     # 'random', 'swap' or 'insert'
 CROSSOVER_METHOD = 'mask'      # 'mask', 'one_point' or 'two_point'
 TEST_NAME = "baseline"
-
+SEED = 0
 # ------------------ Run Directory and Logger Setup and Helper Functions ------------------
 def setup_run_directory():
     base_dir = os.path.join("results", "random_structure")
@@ -76,6 +76,7 @@ def setup_run_directory():
         "OUTPUT_ROBOT_GIFS": OUTPUT_ROBOT_GIFS,
         "OUTPUT_POPULATION": OUTPUT_POPULATION,
         "TEST_NAME": TEST_NAME,
+        "SEED": SEED,
     }
 
     params_file = os.path.join(run_dir, "parameters.txt")
@@ -409,7 +410,7 @@ def random_injection(population, fraction=0.2):
 def main_loop():
     #SEED = secrets.randbelow(1_000_000_000)
     #np.random.seed(SEED)
-    random.seed(SEED)
+    #random.seed(SEED)
     best_fitness = -float('inf')
     best_robot = None
 
@@ -563,6 +564,8 @@ def main_loop():
     plt.legend()
     plt.show()
 
+    plot_path = os.path.join(RUN_DIR, "fitness_plot.png")
+    plt.savefig(plot_path)
 
     for i in range(3):
         utils.simulate_best_robot(best_robot, scenario=SCENARIO, steps=STEPS)
@@ -583,6 +586,9 @@ if __name__ == "__main__":
         MUTATION_METHOD = mut_method
         CROSSOVER_METHOD = cross_method
         TEST_NAME = f"{mut_method}_mutation_{cross_method}"
+        SEED = secrets.randbelow(1_000_000_000)
+        np.random.seed(SEED)
+        random.seed(SEED)
         RUN_DIR = setup_run_directory()
         LOG_FILE = os.path.join(RUN_DIR, "log.txt")
         main_loop()
