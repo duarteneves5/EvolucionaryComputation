@@ -430,7 +430,7 @@ class BodyFitness:
         end_x = env.sim.object_pos_at_time(env.sim.get_time(), 'robot')[0].mean()
         env.close()
 
-        print(f"distance walked: {end_x - start_x}")
+        #print(f"distance walked: {end_x - start_x}")
         return end_x - start_x
 
 
