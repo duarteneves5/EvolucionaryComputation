@@ -650,6 +650,9 @@ def main():
             child1 = apply_mutation(child1, 0.05) # TODO implement dynamic stagnation handling and mutation rate adjustment
             child2 = apply_mutation(child2, 0.05)
 
+            # TODO XANATÃO!!
+            # TODO fix this, this was only made like this because of the Genotype object (either fix the logic here or pass the genotype object
+            #  to the functions and adapt the functions to work with the object)
             # Add children
             new_child1 = parent1.copy()
             new_child1.update_structure(child1)
