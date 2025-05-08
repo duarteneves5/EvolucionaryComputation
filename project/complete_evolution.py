@@ -2,6 +2,8 @@ import multiprocessing
 import os
 import random
 import numpy as np
+import torch
+
 import utils
 import secrets
 from concurrent.futures import ProcessPoolExecutor
@@ -29,7 +31,9 @@ MAX_GRID_SIZE = (5, 5)
 VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
 
 NUM_GENERATIONS = 100
+CMA_ITERS = 3 # 3 controller optimizations for 1 structure optimization
 POPULATION_SIZE = 25
+NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.06))  # 6% elitism
 STEPS = 1000
 
 def apply_mutation(robot, rate):
@@ -274,8 +278,8 @@ class CMAESOptimizer:
         # expert recombination weights: log-linear scheme
         raw_weights = np.log(self.mu + 0.5) - np.log(np.arange(1, self.mu + 1))
         self.weights = raw_weights / np.sum(raw_weights)
-        mu_eff = 1.0 / np.sum(self.weights ** 2)
-        print("μ_eff =", mu_eff)
+        #mu_eff = 1.0 / np.sum(self.weights ** 2)
+        #print("μ_eff =", mu_eff)
 
         self.INITIAL_SPREAD = 0.7
         self.MIN_SPREAD = 0.05
@@ -402,39 +406,69 @@ class CMAESOptimizer:
         return pop, fitnesses
 
 
+class BodyFitness:
+    def __init__(self, body, mask):
+        self.body = body
+        self.mask = mask
+
+    # TODO this fitness function is horse shit, take more into account on the fitness calculation
+    # TODO especialy stats related to the environment, but mainly, distance, speed and efficiency (the basics)
+    def __call__(self, weights, generation=0):
+        brain = NeuralController(MAX_BRAIN_INPUT_SIZE, MAX_BRAIN_OUTPUT_SIZE)
+        set_weights(brain, weights, reconstruct_weights=True)
+        env = gym.make(SCENARIO, max_episode_steps=STEPS,
+                       body=self.body, connections=get_full_connectivity(self.body))
+        obs, _ = env.reset()
+        start_x = env.sim.object_pos_at_time(0, 'robot')[0].mean()
+        for _ in range(STEPS):
+            pad = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
+            pad[:len(obs)] = obs
+            with torch.no_grad():
+                logits = brain(torch.from_numpy(pad).unsqueeze(0)).squeeze(0).numpy()
+            act = logits[self.mask]
+            obs, *_ = env.step(act)
+        end_x = env.sim.object_pos_at_time(env.sim.get_time(), 'robot')[0].mean()
+        env.close()
+
+        print(f"distance walked: {end_x - start_x}")
+        return end_x - start_x
+
+
+MAX_BRAIN_INPUT_SIZE = 98 # 86
+MAX_BRAIN_OUTPUT_SIZE = 25
 class Genotype:
-    def __init__(self):
-        self.structure = create_random_robot()
-        self.connectivity = get_full_connectivity(self.structure)
-        self.env = gym.make(SCENARIO, max_episode_steps=STEPS, body=self.structure, connections=self.connectivity)
-        self.input_size = self.env.observation_space.shape[0]
-        self.output_size = self.env.action_space.shape[0]
-        self.brain = NeuralController(self.input_size, self.output_size, init_params=True)
+    def __init__(self, structure=None, weights=None):
+        self.structure = create_random_robot() if structure is None else structure
+        self.act_mask = None
+        self.update_mask()
+
+        self.brain = NeuralController(MAX_BRAIN_INPUT_SIZE, MAX_BRAIN_OUTPUT_SIZE, init_params=True)
+        if weights is not None:
+            set_weights(self.brain, weights, reconstruct_weights=True)
+        fitness_wrapper = BodyFitness(self.structure, self.act_mask)
+        self.cma = CMAESOptimizer(self.brain, POPULATION_SIZE, fitness_wrapper)
+
+    def update_mask(self):
+        flat = self.structure.flatten()
+        self.act_mask = (flat == 3) | (flat == 4)
 
     def update_structure(self, new_structure):
         self.structure = new_structure
+        self.update_mask()
+        self.cma = CMAESOptimizer(self.brain, POPULATION_SIZE, evaluate_fitness)
 
-        self.connectivity = get_full_connectivity(self.structure)
-        self.env = gym.make(SCENARIO, max_episode_steps=STEPS, body=self.structure, connections=self.connectivity)
-        input_size = self.env.observation_space.shape[0]
-        output_size = self.env.action_space.shape[0]
+    def update_weights(self, weights, reconstruct_weights=False):
+        set_weights(self.brain, weights, reconstruct_weights)
 
-        if input_size != self.input_size or \
-            output_size != self.output_size:
-            self.input_size = input_size
-            self.output_size = output_size
-
-            previous_weights = get_weights(self.brain)
-            self.brain = NeuralController(self.input_size, self.output_size)
-            set_weights(self.brain, previous_weights)
-
-    def update_weights(self, weights, reconstructed_weights=False):
-        set_weights(self.brain, weights, reconstructed_weights)
+    def act(self, obs_tensor):
+        with torch.no_grad():
+            logits = self.brain(obs_tensor).squeeze(0).cpu().numpy()
+        return logits[self.act_mask]
 
 
 ## EVALUTATION
 def evaluate_fitness(
-        genotype: Genotype,
+        genotype,
         view=False,
         w_distance=0.5,
         w_efficiency=0.25,
@@ -447,9 +481,15 @@ def evaluate_fitness(
     EFF_REF = 0.6  # good efficiency
     SPD_REF = 0.07  # good speed in m/s
 
-    env = genotype.env
+    print(f"GENO: {genotype}")
+
+    # build env for this structure
+    connections = get_full_connectivity(genotype.structure)
+    env = gym.make(SCENARIO, max_episode_steps=STEPS, body=genotype.structure, connections=connections)
     sim = env.sim
-    brain = genotype.brain
+    obs, _ = env.reset()
+    obs_pad = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
+    obs_pad[: len(obs)] = obs
 
     viewer = EvoViewer(sim) if view else None
     if view:
@@ -472,9 +512,11 @@ def evaluate_fitness(
 
     for t in range(1, STEPS+1):
         # Update actuation before stepping
-        state_tensor = torch.from_numpy(state).float().unsqueeze(0)  # Convert to tensor
-        with torch.no_grad():
-            action = brain(state_tensor).detach().numpy().flatten()  # Get action
+        #state_tensor = torch.from_numpy(state).float().unsqueeze(0)  # Convert to tensor
+        #with torch.no_grad():
+        #    action = brain(state_tensor).detach().numpy().flatten()  # Get action
+
+        action = genotype.act(obs_pad)
 
         #action_magnitude = np.sum(np.abs(action))
         #energy = (np.sum(np.abs(action - prev_act)) +  0.1*action_magnitude) / t
@@ -549,14 +591,72 @@ def evaluate_fitness(
     return fitness
 
 
+POOL = ProcessPoolExecutor(max_workers=max(1, os.cpu_count()))
+def parallel_fit_eval(population):
+    return list(POOL.map(evaluate_fitness, population))
+
+
 def main():
     population = [Genotype() for _ in range(POPULATION_SIZE)]
 
-    for i in population:
-        print(f"{evaluate_fitness(i, view=True)}")
-
     for gen in range(NUM_GENERATIONS):
-        pass
+        for i in range(CMA_ITERS):
+            for genotype in population:
+                genotype.cma.step(i)
+            for genotype in population:
+                genotype.update_weights(genotype.cma.m, reconstruct_weights=True)
+
+        fits = parallel_fit_eval(population)
+        print(fits)
+        print(f"Gen {gen:03d}  best={max(fits):.2f}  mean={np.mean(fits):.2f}")
+
+        # Sort population by fitness to get the top individuals
+        sorted_indices = np.argsort(fits)
+        new_population = []
+
+        # Elitism: keep top N
+        for i in sorted_indices[-NUM_ELITE_ROBOTS:]:
+            new_population.append(population[i])
+
+        # Fill the rest of the new population
+        # Make a copy so we don't remove from original 'population' while selecting
+        pop_copy = population[:]
+
+        fitness_copy = fits[:]
+
+        while len(new_population) < POPULATION_SIZE:
+
+            # Parent selection
+            while True:
+                parent1, idx1 = select_parent(pop_copy, fitness_copy)
+                parent2, idx2 = select_parent(pop_copy, fitness_copy)
+                if idx2 != idx1:
+                    break
+
+            # Parent selection
+            # parent1, idx1 = select_parent(pop_copy, fitness_copy)
+            # Remove it from the "pool" so we don't select the exact same index again
+            # pop_copy.pop(idx1)
+            # fitness_copy.pop(idx1)
+
+            # parent2, idx2 = select_parent(pop_copy, fitness_copy)
+            # Important: do not pop idx2 from pop_copy yet, because removing idx1 changes indexing
+            # but for simplicity, we won't re-use the same parent in one iteration, so it's okay.
+
+            # Crossover
+            child1, child2 = apply_crossover(parent1, parent2)
+
+            # Mutation
+            child1 = apply_mutation(child1, 0.05) # TODO implement dynamic stagnation handling and mutation rate adjustment
+            child2 = apply_mutation(child2, 0.05)
+
+            # Add children
+            new_population.append(child1)
+            if len(new_population) < POPULATION_SIZE:
+                new_population.append(child2)
+
+        population = new_population
+
 
 if __name__ == '__main__':
     multiprocessing.freeze_support()
