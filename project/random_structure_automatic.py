@@ -1,5 +1,7 @@
-import os
+﻿import os
 import datetime
+from fileinput import filename
+
 import numpy as np
 import random
 import copy
@@ -10,24 +12,23 @@ from evogym import EvoWorld, EvoSim, EvoViewer, sample_robot, get_full_connectiv
 import utils
 from fixed_controllers import *
 
+import matplotlib.pyplot as plt
+#import secrets
+
 # ---- PARAMETERS ----
 NUM_GENERATIONS = 50  # Number of generations to evolve
 POPULATION_SIZE = 50  # Number of robots per generation
 NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.06))  # 6% elitism
-MUTATION_RATE = 0.05
+MUTATION_RATE = 0.2
 MIN_GRID_SIZE = (5, 5)
 MAX_GRID_SIZE = (5, 5)
-STEPS = 1000
-SCENARIO = 'BridgeWalker-v0'
+STEPS = 400
+SCENARIO = 'Walker-v0'
 # For dynamic mutation adjustments
 STAGNATION_LIMIT = 5  # # of gens without improvement before we do something, if greater than 50 it doesnt act
 MUTATION_RATE_INCREASE = 2.0  # Factor to multiply mutation rate when stagnant
 RANDOM_INJECTION_FRACTION = 0.1  # Replace 20% of the population with random new ones if stagnant
 
-# Choose among 'random', 'swap', or 'insert' to test each
-MUTATION_METHOD = 'insert'
-# one of 'mask', 'one_point', 'two_point'
-CROSSOVER_METHOD = 'one_point'
 
 # ---- VOXEL TYPES ----
 VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
@@ -39,7 +40,11 @@ CONTROLLER = alternating_gait
 
 OUTPUT_ROBOT_GIFS = True                # this serves to output the robot gifs on the evogym so we can better
 OUTPUT_POPULATION = True
-TEST_NAME = "insert_mutation"                    # this serves for when testing for example a new feature to be easily tracked in the results folder
+
+# These will be overridden inside each experiment loop:
+MUTATION_METHOD = 'random'     # 'random', 'swap' or 'insert'
+CROSSOVER_METHOD = 'mask'      # 'mask', 'one_point' or 'two_point'
+TEST_NAME = "baseline"
 
 # ------------------ Run Directory and Logger Setup and Helper Functions ------------------
 def setup_run_directory():
@@ -48,7 +53,7 @@ def setup_run_directory():
         os.makedirs(base_dir)
     # Use a timestamp to create a unique run folder.
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(base_dir, f"run_{TEST_NAME}_{timestamp}")
+    run_dir = os.path.join(base_dir, f"SEED_final_run_{TEST_NAME}_{timestamp}")
     os.makedirs(run_dir)
 
     # Save the parameters to a file
@@ -80,8 +85,10 @@ def setup_run_directory():
 
     return run_dir
 
-RUN_DIR = setup_run_directory()
-LOG_FILE = os.path.join(RUN_DIR, "log.txt")
+
+# these will be set each run:
+RUN_DIR = None
+LOG_FILE = None
 
 def log(message):
     # Print to console and also write to log file.
@@ -182,8 +189,6 @@ def evaluate_fitness(robot_structure, view=False):
         return 0.0
 
 
-
-
 def create_random_robot():
     """Generate a valid random robot structure (connected and has at least one actuator)."""
     while True:
@@ -252,6 +257,10 @@ def swap_mutation(robot, attempts=10):
         if is_valid_robot(mutated):
             return mutated
     return robot
+
+
+def is_valid_robot(robot):
+    return is_connected(robot) and np.any(robot == 3)
 
 
 
@@ -397,116 +406,183 @@ def random_injection(population, fraction=0.2):
 
 
 # ---------------- Main Evolutionary Loop ----------------
-best_fitness = -float('inf')
-best_robot = None
+def main_loop():
+    #SEED = secrets.randbelow(1_000_000_000)
+    #np.random.seed(SEED)
+    random.seed(SEED)
+    best_fitness = -float('inf')
+    best_robot = None
 
-# Initial population
-population = [create_random_robot() for _ in range(POPULATION_SIZE)]
+    # keep track of per‐generation stats
+    gen_avg_fitness    = []
+    gen_std_fitness    = []
+    gen_best_per_gen   = []
+    best_per_gen_ever  = []
 
-# Track stagnation
-stagnation_counter = 0
-current_mutation_rate = MUTATION_RATE
-prev_best_fitness = None
+    # Initial population
+    population = [create_random_robot() for _ in range(POPULATION_SIZE)]
 
-for gen in range(NUM_GENERATIONS):
-    # Evaluate fitness
-    population_fitness = [evaluate_fitness(robot) for robot in population]
+    # Track stagnation
+    stagnation_counter = 0
+    current_mutation_rate = MUTATION_RATE
+    prev_best_fitness = None
 
-    # Find best in current population
-    best_idx = np.argmax(population_fitness)
-    gen_best_fit = population_fitness[best_idx]
+    for gen in range(NUM_GENERATIONS):
+        # Evaluate fitness
+        population_fitness = [evaluate_fitness(robot) for robot in population]
 
-    # Check for improvement
-    if gen_best_fit > best_fitness:
-        best_fitness = gen_best_fit
-        best_robot = population[best_idx]
-        stagnation_counter = 0
-        current_mutation_rate = MUTATION_RATE  # reset to default
-    else:
-        stagnation_counter += 1
-
-    # --- Increase mutation rate by 0.05 if this generation's best fitness hasn't changed ---
-    #if prev_best_fitness is not None and abs(gen_best_fit - prev_best_fitness) < 1e-6:
-    #    current_mutation_rate = min(1.0, current_mutation_rate + 0.05)
-    #    log(f"> No improvement from previous generation; increased mutation rate by 0.05 to {current_mutation_rate:.3f}")
-
-    # Save the current best fitness value for the next generation.
-    prev_best_fitness = gen_best_fit
-
-    if OUTPUT_ROBOT_GIFS:
-        capture_simulation_frame(best_robot, gen, SCENARIO, STEPS, CONTROLLER)
-
-    if OUTPUT_POPULATION:
-        capture_population_frames(population, gen, SCENARIO, STEPS, CONTROLLER)
+        # Compute and record generation statistics
+        avg_fit = float(np.mean(population_fitness))
+        std_fit = float(np.std(population_fitness))
+        gen_avg_fitness.append(avg_fit)
+        gen_std_fitness.append(std_fit)
 
 
-    log(f"Gen {gen} | Best Fitness: {best_fitness:.3f} | Current Gen Best: {gen_best_fit:.3f} | Mutation Rate: {current_mutation_rate:.3f}")
 
-    # If we've been stagnant, increase mutation or inject random
-    if stagnation_counter >= STAGNATION_LIMIT:
-        log(f"> Stagnation reached {STAGNATION_LIMIT} generations: Increasing mutation rate by 0.05 to {current_mutation_rate:.3f}")
-        current_mutation_rate = min(1.0, current_mutation_rate + 0.05)
-        # random injection
-        #population = random_injection(population, RANDOM_INJECTION_FRACTION)
-        # reset stagnation counter so we wait for new improvements
-        stagnation_counter = 0
+        # Find best in current population
+        best_idx = np.argmax(population_fitness)
+        gen_best_fit = population_fitness[best_idx]
 
-    # Sort population by fitness to get the top individuals
-    sorted_indices = np.argsort(population_fitness)
-    new_population = []
+        # Check for improvement
+        if gen_best_fit > best_fitness:
+            best_fitness = gen_best_fit
+            best_robot = population[best_idx]
+            stagnation_counter = 0
+            current_mutation_rate = MUTATION_RATE  # reset to default
+        else:
+            stagnation_counter += 1
 
-    # Elitism: keep top N
-    for i in sorted_indices[-NUM_ELITE_ROBOTS:]:
-        new_population.append(population[i])
+        # 3) Per‐gen best
+        gen_best = float(np.max(population_fitness))
+        gen_best_per_gen.append(gen_best)
 
-    # Fill the rest of the new population
-    # Make a copy so we don't remove from original 'population' while selecting
-    pop_copy = population[:]
+        # 4) All‐time best
+        if gen_best > best_fitness:
+            best_fitness = gen_best
+        best_per_gen_ever.append(best_fitness)
 
+        # --- Increase mutation rate by 0.05 if this generation's best fitness hasn't changed ---
+        #if prev_best_fitness is not None and abs(gen_best_fit - prev_best_fitness) < 1e-6:
+        #    current_mutation_rate = min(1.0, current_mutation_rate + 0.05)
+        #    log(f"> No improvement from previous generation; increased mutation rate by 0.05 to {current_mutation_rate:.3f}")
 
-    fitness_copy = population_fitness[:]
+        # Save the current best fitness value for the next generation.
+        prev_best_fitness = gen_best_fit
 
-    while len(new_population) < POPULATION_SIZE:
+        if OUTPUT_ROBOT_GIFS:
+            capture_simulation_frame(best_robot, gen, SCENARIO, STEPS, CONTROLLER)
 
-        # Parent selection
-        while True:
-            parent1, idx1 = select_parent(pop_copy, fitness_copy)
-            parent2, idx2 = select_parent(pop_copy, fitness_copy)
-            if idx2 != idx1:
-                break
-
-        # Parent selection
-        #parent1, idx1 = select_parent(pop_copy, fitness_copy)
-        # Remove it from the "pool" so we don't select the exact same index again
-        #pop_copy.pop(idx1)
-        #fitness_copy.pop(idx1)
-
-        #parent2, idx2 = select_parent(pop_copy, fitness_copy)
-        # Important: do not pop idx2 from pop_copy yet, because removing idx1 changes indexing
-        # but for simplicity, we won't re-use the same parent in one iteration, so it's okay.
-
-        # Crossover
-        child1, child2 = apply_crossover(parent1, parent2)
+        if OUTPUT_POPULATION:
+            capture_population_frames(population, gen, SCENARIO, STEPS, CONTROLLER)
 
 
-        # Mutation
-        child1 = apply_mutation(child1, current_mutation_rate)
-        child2 = apply_mutation(child2, current_mutation_rate)
+        log(f"Gen {gen} | Best Fitness: {best_fitness:.3f} | Current Gen Best: {gen_best_fit:.3f} | Mutation Rate: {current_mutation_rate:.3f}")
+        log(f"Gen {gen:2d} | Best: {gen_best_fit:.3f} | Avg: {avg_fit:.3f} +- {std_fit:.3f} | All-Time Best: {best_fitness:.3f} | MutRate: {current_mutation_rate:.3f}")
+        # If we've been stagnant, increase mutation or inject random
+        if stagnation_counter >= STAGNATION_LIMIT:
+            log(f"> Stagnation reached {STAGNATION_LIMIT} generations: Increasing mutation rate by 0.05 to {current_mutation_rate:.3f}")
+            current_mutation_rate = min(1.0, current_mutation_rate + 0.05)
+            # random injection
+            #population = random_injection(population, RANDOM_INJECTION_FRACTION)
+            # reset stagnation counter so we wait for new improvements
+            stagnation_counter = 0
+
+        # Sort population by fitness to get the top individuals
+        sorted_indices = np.argsort(population_fitness)
+        new_population = []
+
+        # Elitism: keep top N
+        for i in sorted_indices[-NUM_ELITE_ROBOTS:]:
+            new_population.append(population[i])
+
+        # Fill the rest of the new population
+        # Make a copy so we don't remove from original 'population' while selecting
+        pop_copy = population[:]
 
 
-        # Add children
-        new_population.append(child1)
-        if len(new_population) < POPULATION_SIZE:
-            new_population.append(child2)
+        fitness_copy = population_fitness[:]
 
-    population = new_population
+        while len(new_population) < POPULATION_SIZE:
 
-# After evolution, demonstrate the best robot
-log(f"\n=== EVOLUTION COMPLETE ===\nBest Fitness Found: {best_fitness}")
-log(f"Best Robot:\n{best_robot}")
+            # Parent selection
+            while True:
+                parent1, idx1 = select_parent(pop_copy, fitness_copy)
+                parent2, idx2 = select_parent(pop_copy, fitness_copy)
+                if idx2 != idx1:
+                    break
 
-# Optional: run best robot a few times, or create a GIF, etc.
-for i in range(3):
-    utils.simulate_best_robot(best_robot, scenario=SCENARIO, steps=STEPS)
+            # Parent selection
+            #parent1, idx1 = select_parent(pop_copy, fitness_copy)
+            # Remove it from the "pool" so we don't select the exact same index again
+            #pop_copy.pop(idx1)
+            #fitness_copy.pop(idx1)
 
-utils.create_gif(best_robot, filename='random_search.gif', scenario=SCENARIO, steps=STEPS, controller=CONTROLLER)
+            #parent2, idx2 = select_parent(pop_copy, fitness_copy)
+            # Important: do not pop idx2 from pop_copy yet, because removing idx1 changes indexing
+            # but for simplicity, we won't re-use the same parent in one iteration, so it's okay.
+
+            # Crossover
+            child1, child2 = apply_crossover(parent1, parent2)
+
+
+            # Mutation
+            child1 = apply_mutation(child1, current_mutation_rate)
+            child2 = apply_mutation(child2, current_mutation_rate)
+
+
+            # Add children
+            new_population.append(child1)
+            if len(new_population) < POPULATION_SIZE:
+                new_population.append(child2)
+
+        population = new_population
+
+    # After evolution, demonstrate the best robot
+    log(f"\n=== EVOLUTION COMPLETE ===\nBest Fitness Found: {best_fitness}")
+    log(f"Best Robot:\n{best_robot}")
+
+    plt.figure()
+    plt.errorbar(
+        range(NUM_GENERATIONS),
+        gen_avg_fitness,
+        yerr=gen_std_fitness,
+        label="mean ± std"
+    )
+    plt.plot(
+        range(NUM_GENERATIONS),
+        gen_best_per_gen,
+        label="generation best"
+    )
+    plt.plot(
+        range(NUM_GENERATIONS),
+        best_per_gen_ever,
+        label="all-time best"
+    )
+    plt.xlabel("Generation")
+    plt.ylabel("Fitness")
+    plt.legend()
+    plt.show()
+
+
+    for i in range(3):
+        utils.simulate_best_robot(best_robot, scenario=SCENARIO, steps=STEPS)
+
+    utils.create_gif(best_robot, filename='random_search.gif', scenario=SCENARIO, steps=STEPS, controller=CONTROLLER)
+
+
+# ---------------- Run All Experiments ----------------
+if __name__ == "__main__":
+    experiments = []
+    # 5 runs each, default (mask) crossover
+    for method in ['swap']:
+        for run_id in range(1, 6):
+            TEST_NAME = f"{method}_mutation"
+            experiments.append((method, 'mask', run_id))
+
+    for mut_method, cross_method, run_id in experiments:
+        MUTATION_METHOD = mut_method
+        CROSSOVER_METHOD = cross_method
+        TEST_NAME = f"{mut_method}_mutation_{cross_method}"
+        RUN_DIR = setup_run_directory()
+        LOG_FILE = os.path.join(RUN_DIR, "log.txt")
+        main_loop()
