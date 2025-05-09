@@ -22,7 +22,7 @@ NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.06))  # 6% elitism
 MUTATION_RATE = 0.2
 MIN_GRID_SIZE = (5, 5)
 MAX_GRID_SIZE = (5, 5)
-STEPS = 400
+STEPS = 700
 SCENARIO = 'BridgeWalker-v0'
 # For dynamic mutation adjustments
 STAGNATION_LIMIT = 5  # # of gens without improvement before we do something, if greater than 50 it doesnt act
@@ -39,7 +39,7 @@ CONTROLLER = alternating_gait
 # CONTROLLER = hopping_motion
 
 OUTPUT_ROBOT_GIFS = True                # this serves to output the robot gifs on the evogym so we can better
-OUTPUT_POPULATION = True
+OUTPUT_POPULATION = False
 
 # These will be overridden inside each experiment loop:
 MUTATION_METHOD = 'random'     # 'random', 'swap' or 'insert'
@@ -53,7 +53,7 @@ def setup_run_directory():
         os.makedirs(base_dir)
     # Use a timestamp to create a unique run folder.
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(base_dir, f"SEED_final_run_{TEST_NAME}_{timestamp}")
+    run_dir = os.path.join(base_dir, f"Bridge_final_run_{TEST_NAME}_{timestamp}")
     os.makedirs(run_dir)
 
     # Save the parameters to a file
@@ -577,10 +577,20 @@ def main_loop():
 if __name__ == "__main__":
     experiments = []
     # 5 runs each, default (mask) crossover
-    for method in ['swap']:
+    for method in ['insert']:
+
+        TEST_NAME = f"{method}_mutation"
+        experiments.append((method, 'mask', 1))
+
+    for method in ['insert']:
         for run_id in range(1, 6):
             TEST_NAME = f"{method}_mutation"
-            experiments.append((method, 'mask', run_id))
+            experiments.append((method, 'one_point', run_id))
+
+    for method in ['insert']:
+        for run_id in range(1, 6):
+            TEST_NAME = f"{method}_mutation"
+            experiments.append((method, 'two_point', run_id))
 
     for mut_method, cross_method, run_id in experiments:
         MUTATION_METHOD = mut_method
