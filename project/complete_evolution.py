@@ -5,7 +5,9 @@ import numpy as np
 import torch
 import datetime
 import matplotlib.pyplot as plt
-
+import imageio
+import csv
+from pathlib import Path
 import utils
 import secrets
 from concurrent.futures import ProcessPoolExecutor
@@ -15,8 +17,7 @@ import itertools
 from neural_controller import *
 from project.random_controler import NUM_GENERATIONS
 
-#GLOBAL_CMA_EXECUTOR = ProcessPoolExecutor(max_workers=os.cpu_count())
-#GLOBAL_FIT_EXECUTOR = ProcessPoolExecutor(max_workers=os.cpu_count())
+
 GLOBAL_EXEC = ProcessPoolExecutor(max_workers=os.cpu_count())
 
 # 'random', 'swap', or 'insert'
@@ -36,11 +37,11 @@ MIN_GRID_SIZE = (5, 5)
 MAX_GRID_SIZE = (5, 5)
 VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
 
-NUM_GENERATIONS = 100
+NUM_GENERATIONS = 250
 CMA_ITERS = 3 # 3 controller optimizations for 1 structure optimization
 POPULATION_SIZE = 25
 NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.06))  # 6% elitism
-STEPS = 1000
+STEPS = 1500
 
 
 # Dynamic stagnation handling parameters
@@ -51,6 +52,16 @@ MUTATION_RATE_INCREASE = 0.2  # additive increase (e.g., +0.2)
 TEST_NAME = "baseline"
 
 OUTPUT_ROBOT_GIFS = True                # this serves to output the robot gifs on the evogym so we can better
+
+def soft_norm(x, ref, k=4.0):
+    """smoothly maps x ≥ 0 to (0, 1); reaches 0.98 around x≈ref"""
+    x = np.maximum(0.0, x)
+    return 1.0 - np.exp(-k * x / (ref + 1e-8))
+
+def goal_sigmoid(x, centre, width=0.5):
+    """sharp 0→1 transition once x passes `centre` (for GapJumper)."""
+    return 1.0 / (1.0 + np.exp(-(x - centre) / width))
+
 
 # ------------------ Run Directory and Logger Setup and Helper Functions ------------------
 def setup_run_directory():
@@ -92,7 +103,7 @@ def setup_run_directory():
 
 # these will be set each run:
 RUN_DIR = None
-LOG_FILE = None
+LOG_FILE = "log.txt"
 
 def log(message):
     # Print to console and also write to log file.
@@ -471,32 +482,208 @@ class CMAESOptimizer:
         return pop, fitnesses
 
 
+'''
 class BodyFitness:
+    """
+    Scenario-aware fitness usable both by CMA-ES (optimising weights)
+    and by higher-level genotype evaluation.  Works for CaveCrawler-v0
+    and GapJumper-v0.
+    """
+    def __init__(self, body, mask):
+        self.body = body
+        self.mask = mask          # boolean mask selecting actuator indices
+
+        # scenario-specific reference values
+        if SCENARIO.startswith("Cave"):
+            self.DIST_REF  = 60.0
+            self.SPEED_REF = 0.05
+            self.GAP_X     = None
+        elif SCENARIO.startswith("Gap"):
+            self.DIST_REF  = 40.0
+            self.SPEED_REF = 0.08
+            self.GAP_X     = 25.0     # centre of the chasm in env metres
+        else:
+            raise ValueError(f"Unsupported scenario {SCENARIO}")
+
+    # ------------------------------------------------------------------
+    def __call__(self, weights, generation: int = 0):
+        # ------------- rebuild the controller -------------
+        brain = NeuralController(MAX_BRAIN_INPUT_SIZE, MAX_BRAIN_OUTPUT_SIZE)
+        set_weights(brain, weights, reconstruct_weights=True)
+
+        env = gym.make(
+            SCENARIO,
+            max_episode_steps=STEPS,
+            body=self.body,
+            connections=get_full_connectivity(self.body)
+        )
+        sim = env.sim
+
+        obs, _ = env.reset()
+        pad = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
+        pad[:len(obs)] = obs
+
+        # ------------- accumulators -------------
+        start_x      = sim.object_pos_at_time(0, "robot")[0].mean()
+        prev_act     = np.zeros(np.count_nonzero(self.mask))
+        prev_vel     = np.zeros_like(prev_act)
+        total_energy = 0.0
+        jerk_sum     = 0.0
+        fell         = False
+
+        # ------------- episode roll-out -------------
+        for _ in range(STEPS):
+            with torch.no_grad():
+                logits = brain(torch.from_numpy(pad).unsqueeze(0)).squeeze(0).numpy()
+            act = logits[self.mask]
+
+            vel          = act - prev_act
+            total_energy += np.sum(np.abs(act * vel))
+            jerk_sum     += np.sum((vel - prev_vel) ** 2)
+            prev_act, prev_vel = act, vel
+
+            obs, _, term, trunc, _ = env.step(act)
+            if term or trunc:
+                fell = True
+                break
+            pad[:len(obs)] = obs
+
+        tf       = sim.get_time()
+        end_x    = sim.object_pos_at_time(tf, "robot")[0].mean()
+        distance = max(0.0, end_x - start_x)
+        speed    = distance / max(1e-6, tf)
+        env.close()
+
+        # ------------- term scores -------------
+        progress   = soft_norm(distance, self.DIST_REF)
+        velocity   = soft_norm(speed,     self.SPEED_REF)
+        efficiency = soft_norm(distance / (total_energy + 1e-6) * 1e5, 0.4)
+        smoothness = 1.0 / (1.0 + jerk_sum / (STEPS * 10.0))
+
+        if self.GAP_X is None:        # CaveCrawler
+            goal_bonus = distance / self.DIST_REF
+        else:                         # GapJumper
+            goal_bonus = goal_sigmoid(end_x, self.GAP_X)
+
+        if fell:
+            progress   *= 0.2
+            velocity   *= 0.2
+            efficiency *= 0.2
+            smoothness *= 0.2
+            goal_bonus  = 0.0
+
+        # ------------- weighted blend -------------
+        fitness = (
+            0.45 * progress   +
+            0.25 * velocity   +
+            0.15 * efficiency +
+            0.10 * smoothness +
+            0.05 * goal_bonus
+        )
+        return fitness
+'''
+class BodyFitness:
+    """
+    Reference-free fitness.
+    Positive terms:
+        • distance travelled           (metres)
+        • average horizontal speed     (m/s)
+        • goal bonus                   (0 or 1)
+
+    Cost terms (subtracted):
+        • total actuation energy proxy (|τ·Δτ|)
+        • jerk of actuation sequence   (Σ(Δacc)²)
+
+    Final formula
+        fitness = + 1.0 * distance
+                  + 5.0 * speed
+                  + 50.0 * goal_bonus
+                  - 1e-6 * total_energy
+                  - 1e-3 * jerk_sum
+    """
     def __init__(self, body, mask):
         self.body = body
         self.mask = mask
 
-    # TODO this fitness function is horse shit, take more into account on the fitness calculation
-    # TODO especialy stats related to the environment, but mainly, distance, speed and efficiency (the basics)
-    def __call__(self, weights, generation=0):
+        # determine whether we can compute a goal bonus
+        if SCENARIO.startswith("Gap"):
+            self.GAP_X = 25.0       # centre of chasm, adjust if env differs
+        else:
+            self.GAP_X = None       # CaveCrawler uses only distance
+
+    # ------------------------------------------------------------
+    def __call__(self, weights, generation: int = 0, return_components=False):
         brain = NeuralController(MAX_BRAIN_INPUT_SIZE, MAX_BRAIN_OUTPUT_SIZE)
         set_weights(brain, weights, reconstruct_weights=True)
-        env = gym.make(SCENARIO, max_episode_steps=STEPS,
-                       body=self.body, connections=get_full_connectivity(self.body))
+
+        env = gym.make(
+            SCENARIO,
+            max_episode_steps=STEPS,
+            body=self.body,
+            connections=get_full_connectivity(self.body)
+        )
+        sim = env.sim
+
         obs, _ = env.reset()
-        start_x = env.sim.object_pos_at_time(0, 'robot')[0].mean()
+        pad = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
+        pad[:len(obs)] = obs
+
+        start_x      = sim.object_pos_at_time(0, "robot")[0].mean()
+        prev_act     = np.zeros(np.count_nonzero(self.mask))
+        prev_acc     = np.zeros_like(prev_act)
+        total_energy = 0.0
+        jerk_sum     = 0.0
+        fell         = False
+
         for _ in range(STEPS):
-            pad = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
-            pad[:len(obs)] = obs
             with torch.no_grad():
                 logits = brain(torch.from_numpy(pad).unsqueeze(0)).squeeze(0).numpy()
             act = logits[self.mask]
-            obs, *_ = env.step(act)
-        end_x = env.sim.object_pos_at_time(env.sim.get_time(), 'robot')[0].mean()
+
+            vel          = act - prev_act
+            total_energy += np.sum(np.abs(act * vel))
+            jerk_sum     += np.sum((vel - prev_acc) ** 2)
+            prev_act, prev_acc = act, vel
+
+            obs, _, term, trunc, _ = env.step(act)
+            if term or trunc:
+                fell = True
+                break
+            pad[:len(obs)] = obs
+
+        tf       = sim.get_time()
+        end_x    = sim.object_pos_at_time(tf, "robot")[0].mean()
+        distance = max(0.0, end_x - start_x)
+        speed    = distance / max(1e-6, tf)
+
+        # -------- goal bonus --------
+        if self.GAP_X is None:              # CaveCrawler
+            goal_bonus = 0.0                # distance already reflects success
+        else:                               # GapJumper
+            goal_bonus = 1.0 if end_x >= self.GAP_X else 0.0
+
         env.close()
 
-        #print(f"distance walked: {end_x - start_x}")
-        return end_x - start_x
+        if fell:                 # crashed or timed out → heavy penalty
+            distance   *= 0.2
+            speed      *= 0.2
+            goal_bonus  = 0.0
+            total_energy *= 5.0           # punish wasteful failures more
+            jerk_sum     *= 5.0
+
+        # -------- weighted sum --------
+        fitness = (
+            + 1.0  * distance
+            + 5.0  * speed
+            + 50.0 * goal_bonus
+            - 1e-6 * total_energy
+            - 1e-3 * jerk_sum
+        )
+
+        if return_components:
+            return (fitness, distance, speed, goal_bonus,
+                    total_energy, jerk_sum, fell)
+        return fitness
 
 
 MAX_BRAIN_INPUT_SIZE = 98 # 86
@@ -510,8 +697,8 @@ class Genotype:
         self.brain = NeuralController(MAX_BRAIN_INPUT_SIZE, MAX_BRAIN_OUTPUT_SIZE, init_params=True)
         if weights is not None:
             set_weights(self.brain, weights, reconstruct_weights=True)
-        fitness_wrapper = BodyFitness(self.structure, self.act_mask)
-        self.cma = CMAESOptimizer(self.brain, POPULATION_SIZE, fitness_wrapper)
+        self.fitness_wrapper = BodyFitness(self.structure, self.act_mask)
+        self.cma = CMAESOptimizer(self.brain, POPULATION_SIZE, self.fitness_wrapper)
 
     def update_mask(self):
         flat = self.structure.flatten()
@@ -520,7 +707,7 @@ class Genotype:
     def update_structure(self, new_structure):
         self.structure = new_structure
         self.update_mask()
-        self.cma = CMAESOptimizer(self.brain, POPULATION_SIZE, evaluate_fitness)
+        self.cma = CMAESOptimizer(self.brain, POPULATION_SIZE, self.fitness_wrapper)
 
     def update_weights(self, weights, reconstruct_weights=False):
         set_weights(self.brain, weights, reconstruct_weights)
@@ -538,136 +725,30 @@ class Genotype:
             logits = self.brain(obs).squeeze(0).cpu().numpy()
         return logits[self.act_mask]
 
-
-## EVALUTATION
-def evaluate_fitness(
-        genotype,
-        view=False,
-        w_distance=0.5,
-        w_efficiency=0.25,
-        w_speed=0.25,
-        w_survival=0.0,
-        w_fall=0.0,
-        return_components=False
-):
-    DIST_REF = 80.0 # best possible distance
-    EFF_REF = 0.6  # good efficiency
-    SPD_REF = 0.07  # good speed in m/s
-
-    print(f"GENO: {genotype}")
-
-    # build env for this structure
-    connections = get_full_connectivity(genotype.structure)
-    env = gym.make(SCENARIO, max_episode_steps=STEPS, body=genotype.structure, connections=connections)
-    sim = env.sim
-    obs, _ = env.reset()
-    obs_pad = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
-    obs_pad[: len(obs)] = obs
-
-    viewer = EvoViewer(sim) if view else None
-    if view:
-        viewer.track_objects('robot')
-
-    state = env.reset()[0]  # Get initial state
-    t_reward = 0
-    start_com = sim.object_pos_at_time(0, 'robot').mean(axis=1)
-    prev_act = np.zeros(env.action_space.shape[0])
-    prev_acc = np.zeros_like(prev_act)
-    total_energy = 0.0
-    total_actuation = 0.0
-    jerk_sum = 0.0
-    upright_accum = 0.0
-    survived_steps = STEPS
-    fell_over = False
-    MAX_TILT = 99999999
-    prev_x = start_com[0]
-    progress_reward = 0.0
-
-    for t in range(1, STEPS+1):
-        # Update actuation before stepping
-        #state_tensor = torch.from_numpy(state).float().unsqueeze(0)  # Convert to tensor
-        #with torch.no_grad():
-        #    action = brain(state_tensor).detach().numpy().flatten()  # Get action
-
-        action = genotype.act(obs_pad)
-
-        #action_magnitude = np.sum(np.abs(action))
-        #energy = (np.sum(np.abs(action - prev_act)) +  0.1*action_magnitude) / t
-
-        # energy: torque·velocity proxy
-        velocity = (action - prev_act)
-        total_energy += np.sum(np.abs(action * velocity))
-        total_actuation += np.sum(np.abs(action))
-
-        # jerk: change in acceleration
-        acc = velocity
-        jerk_sum += np.sum((acc - prev_acc) ** 2)
-
-        prev_act = action
-        prev_acc = acc
-
-        cur_x = sim.object_pos_at_time(sim.get_time(), 'robot')[0].mean()
-        progress_reward += max(0.0, cur_x - prev_x)  # no reward for sliding back
-        prev_x = cur_x
-
-        # posture: robot tilt w.r.t. x‐axis
-        angle = sim.object_orientation_at_time(sim.get_time(), 'robot')
-        fell_over = abs(angle) > MAX_TILT
-
-        upright_accum += abs(np.cos(angle))  # 1.0 if perfectly aligned
-
-        if view:
-            viewer.render('screen')
-        state, reward, terminated, truncated, info = env.step(action)
-        #t_reward += reward
-        if terminated or truncated:
-            survived_steps = t
-            break
-
-    tf = sim.get_time()
-    end_com = sim.object_pos_at_time(tf, 'robot').mean(axis=1)
-    distance = end_com[0] - start_com[0] # allow negative distance values for backwards moving penalties
-    efficiency = distance / (total_energy + 1e-6) * 1e6
-    speed = distance / max(1, tf)
-    survival_ratio = (survived_steps / STEPS)
-
-    '''
-    if SCENARIO == "ObstacleTraverser-v0":
-        dist_norm = np.clip(progress_reward / DIST_REF, 0.0, 1.0)
-    elif SCENARIO == "DownStepper-v0":
-        dist_norm = np.clip(distance / DIST_REF, 0.0, 1.0)
-    '''
-    dist_norm = np.clip(progress_reward / DIST_REF, 0.0, 1.0)
-
-    eff_norm = np.clip(efficiency / EFF_REF, 0.0, 1.0)
-    spd_norm = np.clip(speed / SPD_REF, 0.0, 1.0)
-    #death_penalty = (1 - survival_ratio) * 50.0
-
-    if view:
-        viewer.close()
-
-    env.close()
-
-    fitness = (
-        w_distance * dist_norm +
-        w_efficiency * eff_norm +
-        w_speed * spd_norm
-        - w_survival * (1 - survival_ratio)
-    )
-
-    if fell_over:
-        fitness -= w_fall
-
-    if return_components:
-        return fitness, w_distance * dist_norm, w_efficiency * eff_norm, w_speed * spd_norm, w_survival * (1 - survival_ratio), int(fell_over) * w_fall, total_energy
-
-    return fitness
+    def fitness(self):
+        """Evaluate this genotype with its current weights."""
+        flat_w = get_weights(self.brain, flatten=True)
+        return self.cma.fitness_function(flat_w)
 
 
-#POOL = ProcessPoolExecutor(max_workers=max(1, os.cpu_count()))
-def parallel_fit_eval(population):
-    #return list(POOL.map(evaluate_fitness, population))
-    return list(GLOBAL_EXEC.map(evaluate_fitness, population))
+def calc_fitness(structure: np.ndarray, flat_weights: np.ndarray):
+    """
+    Stand-alone worker for multiprocessing.
+
+    Parameters
+    ----------
+    structure : (H, W) int8 array
+        Voxel grid of the robot body.
+    flat_weights : (N,) float32 array
+        Flattened neural-network parameters.
+    """
+    # actuator mask: voxels 3 or 4 are actuators
+    mask = (structure.flatten() == 3) | (structure.flatten() == 4)
+
+    # BodyFitness is cheap to construct (just stores numpy arrays)
+    fitness_fn = BodyFitness(structure, mask)
+    fitness, distance, speed, goal_bonus, total_energy, jerk_sum, fell = fitness_fn(flat_weights, return_components=True)
+    return fitness, distance, speed, goal_bonus, total_energy, jerk_sum, fell
 
 
 def main():
@@ -686,22 +767,96 @@ def main():
     stagnation_counter = 0
     current_mutation_rate = BASE_MUTATION_RATE
 
+    csv_path = Path(RUN_DIR) / "generation_log.csv"
+    with csv_path.open("w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow([
+            "generation", "ind_idx",
+            "fitness", "distance", "speed", "goal_bonus",
+            "energy", "jerk", "fell"
+        ])
+
     for gen in range(NUM_GENERATIONS):
-        for i in range(1):
+        start = time.time()
+        for i in range(CMA_ITERS):
             for genotype in population:
                 genotype.cma.step(i)
                 #print("Stepped!")
             for genotype in population:
                 genotype.update_weights(genotype.cma.m, reconstruct_weights=True)
                 #print("Updated!")
+        end = time.time()
+        #print(f'ControllerEvo took {end - start} seconds with {CMA_ITERS} iterations')
 
-        #fits = parallel_fit_eval(population)
-        fits = [evaluate_fitness(genotype) for genotype in population]
-        print(fits)
+        start = time.time()
+        # ---- gather arguments for all individuals ----
+        structures = [g.structure for g in population]
+        weights = [get_weights(g.brain, flatten=True) for g in population]
+
+        # ---- run them in parallel ----
+        fits_vals = list(GLOBAL_EXEC.map(calc_fitness, structures, weights))
+        fits, dist_vals, speed_vals, goal_vals, energy_vals, jerk_vals, fell_vals = map(
+            np.array, zip(*fits_vals)
+        )
+        with csv_path.open("a", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            for idx, (fit, d, s, g, e, j, f) in enumerate(zip(
+                    fits, dist_vals, speed_vals,
+                    goal_vals, energy_vals, jerk_vals, fell_vals)):
+                writer.writerow([gen, idx, fit, d, s, g, e, j, int(f)])
+
+
+        #print(fits)
+        end = time.time()
+        #print(f'Fitness Evaluation took {end - start} seconds')
 
         gen_mean = float(np.mean(fits))
         gen_std = float(np.std(fits))
         gen_best = float(np.max(fits))
+
+        best_idx = int(np.argmax(fits))
+        best_structure = population[best_idx].structure
+
+        plt.figure(figsize=(3, 3))
+        plt.imshow(best_structure, cmap="viridis", vmin=0, vmax=4)
+        plt.axis("off")
+        plt.title(f"Gen {gen} best")
+        struct_dir = Path(RUN_DIR) / "structures"
+        struct_dir.mkdir(exist_ok=True)
+        plt.savefig(struct_dir / f"gen_{gen:03d}.png", bbox_inches="tight")
+        plt.close()
+
+        if gen % 5 == 0:
+            gif_dir = Path(RUN_DIR) / "gifs"
+            gif_dir.mkdir(exist_ok=True)
+            gif_path = gif_dir / f"gen_{gen:03d}.gif"
+
+            # run one episode & capture frames
+            frames = []
+            g = population[best_idx]
+            env = gym.make(
+                SCENARIO, max_episode_steps=STEPS,
+                body=g.structure,
+                connections=get_full_connectivity(g.structure)
+            )
+            sim = env.sim
+            viewer = EvoViewer(sim)
+            viewer.track_objects("robot")
+            obs, _ = env.reset()
+            pad = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
+
+            for _ in range(STEPS):
+                pad[:len(obs)] = obs
+                action = g.act(pad)
+                viewer.render("screen")  # draw on buffer
+                frames.append(viewer.render("rgb_array"))
+                obs, _, term, trunc, _ = env.step(action)
+                if term or trunc:
+                    break
+
+            viewer.close();
+            env.close()
+            imageio.mimsave(gif_path, frames, fps=30)
 
         gen_avg_fitness.append(gen_mean)
         gen_std_fitness.append(gen_std)
@@ -731,6 +886,7 @@ def main():
 
             stagnation_counter = 0
 
+        start = time.time()
         # Sort population by fitness to get the top individuals
         sorted_indices = np.argsort(fits)
         new_population = []
@@ -768,38 +924,36 @@ def main():
             child1, child2 = apply_crossover(parent1.structure, parent2.structure)
 
             # Mutation
-            child1 = apply_mutation(child1, current_mutation_rate)
-            child2 = apply_mutation(child2, current_mutation_rate)
+            child1_struct = apply_mutation(child1, current_mutation_rate)
+            child2_struct = apply_mutation(child2, current_mutation_rate)
 
-            # TODO XANATÃO!!
-            # TODO fix this, this was only made like this because of the Genotype object (either fix the logic here or pass the genotype object
-            #  to the functions and adapt the functions to work with the object)
-            # Add children
-            new_child1 = parent1
-            new_child1.update_structure(child1)
+            new_child1 = Genotype(structure=child1_struct, weights=get_weights(parent1.brain, flatten=True))
             new_population.append(new_child1)
+
             if len(new_population) < POPULATION_SIZE:
-                new_child2 = parent1
-                new_child2.update_structure(child2)
+                new_child2 = Genotype(structure=child2_struct, weights=get_weights(parent1.brain, flatten=True))
                 new_population.append(new_child2)
 
         population = new_population
+        end = time.time()
+        #print(f'StructureEvo took {end - start} seconds')
 
+    gens = np.arange(len(gen_avg_fitness))
     # Plot & save
     plt.figure()
     plt.errorbar(
-        range(NUM_GENERATIONS),
+        gens,
         gen_avg_fitness,
         yerr=gen_std_fitness,
         label="mean ± std"
     )
     plt.plot(
-        range(NUM_GENERATIONS),
+        gens,
         gen_best_per_gen,
         label="generation best"
     )
     plt.plot(
-        range(NUM_GENERATIONS),
+        gens,
         best_per_gen_ever,
         label="all‐time best"
     )
