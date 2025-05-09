@@ -13,6 +13,10 @@ import itertools
 from neural_controller import *
 from project.random_controler import NUM_GENERATIONS
 
+#GLOBAL_CMA_EXECUTOR = ProcessPoolExecutor(max_workers=os.cpu_count())
+#GLOBAL_FIT_EXECUTOR = ProcessPoolExecutor(max_workers=os.cpu_count())
+GLOBAL_EXEC = ProcessPoolExecutor(max_workers=os.cpu_count())
+
 # 'random', 'swap', or 'insert'
 MUTATION_METHOD = 'insert'
 # 'mask', 'one_point', 'two_point'
@@ -302,7 +306,8 @@ class CMAESOptimizer:
             self.population_size = int(4 + 3 * np.log(len(self.m)))
         self.mu = self.population_size // 2
 
-        self.executor = ProcessPoolExecutor(max_workers=os.cpu_count())
+        #self.executor = ProcessPoolExecutor(max_workers=os.cpu_count())
+        self.executor = GLOBAL_EXEC
         self.fitness_function = fitness_function
 
         self.previous_gen_best_fitness = -np.inf
@@ -460,9 +465,17 @@ class Genotype:
     def update_weights(self, weights, reconstruct_weights=False):
         set_weights(self.brain, weights, reconstruct_weights)
 
-    def act(self, obs_tensor):
+    def act(self, obs):
+        # Make sure the net always sees a tensor
+        if isinstance(obs, np.ndarray):
+            obs = torch.from_numpy(obs).float().unsqueeze(0)  # shape (1, D)
+
+        # if it’s already a 1-D tensor, add batch dim
+        if isinstance(obs, torch.Tensor) and obs.dim() == 1:
+            obs = obs.unsqueeze(0)
+
         with torch.no_grad():
-            logits = self.brain(obs_tensor).squeeze(0).cpu().numpy()
+            logits = self.brain(obs).squeeze(0).cpu().numpy()
         return logits[self.act_mask]
 
 
@@ -591,22 +604,26 @@ def evaluate_fitness(
     return fitness
 
 
-POOL = ProcessPoolExecutor(max_workers=max(1, os.cpu_count()))
+#POOL = ProcessPoolExecutor(max_workers=max(1, os.cpu_count()))
 def parallel_fit_eval(population):
-    return list(POOL.map(evaluate_fitness, population))
+    #return list(POOL.map(evaluate_fitness, population))
+    return list(GLOBAL_EXEC.map(evaluate_fitness, population))
 
 
 def main():
-    population = [Genotype() for _ in range(POPULATION_SIZE)]
+    population = [Genotype() for _ in range(5)]
 
     for gen in range(NUM_GENERATIONS):
-        for i in range(CMA_ITERS):
+        for i in range(1):
             for genotype in population:
                 genotype.cma.step(i)
+                #print("Stepped!")
             for genotype in population:
                 genotype.update_weights(genotype.cma.m, reconstruct_weights=True)
+                #print("Updated!")
 
-        fits = parallel_fit_eval(population)
+        #fits = parallel_fit_eval(population)
+        fits = [evaluate_fitness(genotype) for genotype in population]
         print(fits)
         print(f"Gen {gen:03d}  best={max(fits):.2f}  mean={np.mean(fits):.2f}")
 
@@ -654,11 +671,11 @@ def main():
             # TODO fix this, this was only made like this because of the Genotype object (either fix the logic here or pass the genotype object
             #  to the functions and adapt the functions to work with the object)
             # Add children
-            new_child1 = parent1.copy()
+            new_child1 = parent1
             new_child1.update_structure(child1)
             new_population.append(new_child1)
             if len(new_population) < POPULATION_SIZE:
-                new_child2 = parent1.copy()
+                new_child2 = parent1
                 new_child2.update_structure(child2)
                 new_population.append(new_child2)
 

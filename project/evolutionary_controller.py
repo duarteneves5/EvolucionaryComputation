@@ -92,6 +92,13 @@ def create_gif_of_best_policy(weights, filename="best_policy.gif", fps=30):
     imageio.mimsave(filename, frames, fps=fps)
     print(f"GIF saved to {filename}")
 
+robot_structure = np.array([
+    [4, 4, 4, 4, 4],
+    [4, 4, 4, 4, 4],
+    [4, 4, 4, 4, 4],
+    [4, 4, 4, 4, 4],
+    [4, 4, 4, 4, 4]
+])
 
 connectivity = get_full_connectivity(robot_structure)
 env = gym.make(SCENARIO, max_episode_steps=STEPS, body=robot_structure, connections=connectivity)
@@ -413,7 +420,7 @@ def main():
         random.seed(SEED)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_root = Path("results") / f"EC_{SCENARIO}_{POPULATION_SIZE}pop_{STEPS}step_{timestamp}"
+        results_root = Path("results") / f"EC_{SCENARIO}_{POPULATION_SIZE}pop_{STEPS}step_{SEED}"
         results_root.mkdir(parents=True, exist_ok=True)
 
         # CSV file for generation statistics

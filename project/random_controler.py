@@ -319,7 +319,7 @@ def main():
         random.seed(SEED)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_root = Path("results") / f"RC_{SCENARIO}_{POPULATION_SIZE}pop_{STEPS}step_{timestamp}"
+        results_root = Path("results") / f"RC_{SCENARIO}_{POPULATION_SIZE}pop_{STEPS}step_{SEED}"
         results_root.mkdir(parents=True, exist_ok=True)
 
         # CSV file for generation statistics

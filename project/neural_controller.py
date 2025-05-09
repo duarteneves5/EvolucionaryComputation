@@ -14,8 +14,8 @@ class NeuralController(nn.Module):
     def forward(self, x):
         x = torch.relu(self.fc1(x))  # Activation function
         x = self.fc2(x)  # Output layer
-        #return torch.tanh(x) * 100  # Outputs actions for the robot
-        return torch.relu(x) * 100  # Outputs actions for the robot
+        return torch.tanh(x) * 100  # Outputs actions for the robot
+        #return torch.relu(x) * 100  # Outputs actions for the robot
 
 # ---- Convert Weights to NumPy Arrays ----
 def get_weights(model, flatten=False):
