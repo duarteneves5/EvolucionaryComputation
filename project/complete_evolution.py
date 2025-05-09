@@ -676,7 +676,9 @@ def main():
         print(fits)
         gen_best = max(fits)
         gen_mean = float(np.mean(fits))
-        print(f"Gen {gen:03d} | Best: {gen_best:.3f} | Mean: {gen_mean:.3f} | MutRate: {current_mutation_rate:.3f}")
+        std_fit = float(np.std(fits))
+        #print(f"Gen {gen:03d} | Best: {gen_best:.3f} | Mean: {gen_best:.3f} | MutRate: {current_mutation_rate:.3f}")
+        log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} +- {std_fit:.3f} | MutRate: {current_mutation_rate:.3f}")
 
         # === Check stagnation ===
         if gen_best > best_all_time:
