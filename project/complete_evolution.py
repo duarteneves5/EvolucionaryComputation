@@ -4,6 +4,7 @@ import random
 import numpy as np
 import torch
 import datetime
+import matplotlib.pyplot as plt
 
 import utils
 import secrets
@@ -656,8 +657,14 @@ def parallel_fit_eval(population):
 
 
 def main():
-    setup_run_directory()
+    RUN_DIR = setup_run_directory()
     population = [Genotype() for _ in range(POPULATION_SIZE)]
+
+    # per‐generation stats
+    gen_avg_fitness = []
+    gen_std_fitness = []
+    gen_best_per_gen = []
+    best_per_gen_ever = []
 
     # Stagnation tracking
     best_all_time = -float('inf')
@@ -674,11 +681,21 @@ def main():
 
         fits = parallel_fit_eval(population)
         print(fits)
-        gen_best = max(fits)
+
         gen_mean = float(np.mean(fits))
-        std_fit = float(np.std(fits))
+        gen_std = float(np.std(fits))
+        gen_best = float(np.max(fits))
+
+        gen_avg_fitness.append(gen_mean)
+        gen_std_fitness.append(gen_std)
+        gen_best_per_gen.append(gen_best)
+
+        # update all‐time best
+        best_all_time = max(best_all_time, gen_best)
+        best_per_gen_ever.append(best_all_time)
+
         #print(f"Gen {gen:03d} | Best: {gen_best:.3f} | Mean: {gen_best:.3f} | MutRate: {current_mutation_rate:.3f}")
-        log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} +- {std_fit:.3f} | MutRate: {current_mutation_rate:.3f}")
+        log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} ±{gen_std:.3f} | All‐Time Best: {best_all_time:.3f} | MutRate: {current_mutation_rate:.3f}")
 
         # === Check stagnation ===
         if gen_best > best_all_time:
@@ -751,7 +768,32 @@ def main():
 
         population = new_population
 
+    # Plot & save
+    plt.figure()
+    plt.errorbar(
+        range(NUM_GENERATIONS),
+        gen_avg_fitness,
+        yerr=gen_std_fitness,
+        label="mean ± std"
+    )
+    plt.plot(
+        range(NUM_GENERATIONS),
+        gen_best_per_gen,
+        label="generation best"
+    )
+    plt.plot(
+        range(NUM_GENERATIONS),
+        best_per_gen_ever,
+        label="all‐time best"
+    )
+    plt.xlabel("Generation")
+    plt.ylabel("Fitness")
+    plt.legend()
+
+    plot_path = os.path.join(RUN_DIR, "fitness_plot.png")
+    plt.savefig(plot_path)
+    plt.close()
 
 if __name__ == '__main__':
-    multiprocessing.freeze_support()
+    #multiprocessing.freeze_support()
     main()
