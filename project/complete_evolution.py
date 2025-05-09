@@ -49,7 +49,7 @@ OUTPUT_ROBOT_GIFS = True                # this serves to output the robot gifs o
 
 # ------------------ Run Directory and Logger Setup and Helper Functions ------------------
 def setup_run_directory():
-    base_dir = os.path.join("results", "random_structure")
+    base_dir = os.path.join("results", "complete_evolution")
     if not os.path.exists(base_dir):
         os.makedirs(base_dir)
     # Use a timestamp to create a unique run folder.
@@ -656,6 +656,7 @@ def parallel_fit_eval(population):
 
 
 def main():
+    setup_run_directory()
     population = [Genotype() for _ in range(POPULATION_SIZE)]
 
     # Stagnation tracking
