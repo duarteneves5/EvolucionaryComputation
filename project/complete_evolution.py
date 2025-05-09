@@ -15,7 +15,6 @@ from evogym import EvoWorld, EvoSim, EvoViewer, sample_robot, get_full_connectiv
 from evogym.envs import *
 import itertools
 from neural_controller import *
-from project.random_controler import NUM_GENERATIONS
 
 
 GLOBAL_EXEC = ProcessPoolExecutor(max_workers=os.cpu_count())
@@ -25,8 +24,8 @@ MUTATION_METHOD = 'insert'
 # 'mask', 'one_point', 'two_point'
 CROSSOVER_METHOD = 'one_point'
 
-SCENARIO = "CaveCrawler-v0"
-#SCENARIO = "GapJumper-v0"
+#SCENARIO = "CaveCrawler-v0"
+SCENARIO = "GapJumper-v0"
 
 SEED = secrets.randbelow(1_000_000_000)
 print(f"SEEDING WITH {SEED}")
@@ -37,7 +36,7 @@ MIN_GRID_SIZE = (5, 5)
 MAX_GRID_SIZE = (5, 5)
 VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
 
-NUM_GENERATIONS = 250
+NUM_GENERATIONS = 100
 CMA_ITERS = 3 # 3 controller optimizations for 1 structure optimization
 POPULATION_SIZE = 25
 NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.06))  # 6% elitism
@@ -776,6 +775,8 @@ def main():
             "energy", "jerk", "fell"
         ])
 
+    best_weights = None
+
     for gen in range(NUM_GENERATIONS):
         start = time.time()
         for i in range(CMA_ITERS):
@@ -816,6 +817,9 @@ def main():
 
         best_idx = int(np.argmax(fits))
         best_structure = population[best_idx].structure
+
+        if gen_best > best_all_time:
+            best_genotype = population[best_idx]
 
         plt.figure(figsize=(3, 3))
         plt.imshow(best_structure, cmap="viridis", vmin=0, vmax=4)
@@ -937,6 +941,8 @@ def main():
         population = new_population
         end = time.time()
         #print(f'StructureEvo took {end - start} seconds')
+
+    save_weights(best_genotype.brain, RUN_DIR+"/best_weights.pth")
 
     gens = np.arange(len(gen_avg_fitness))
     # Plot & save
