@@ -3,6 +3,8 @@ import os
 import random
 import numpy as np
 import torch
+import datetime
+import matplotlib.pyplot as plt
 
 import utils
 import secrets
@@ -39,6 +41,64 @@ CMA_ITERS = 3 # 3 controller optimizations for 1 structure optimization
 POPULATION_SIZE = 25
 NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.06))  # 6% elitism
 STEPS = 1000
+
+
+# Dynamic stagnation handling parameters
+STAGNATION_LIMIT = 5          # generations without all-time best improvement
+BASE_MUTATION_RATE = 0.05
+MUTATION_RATE_INCREASE = 0.2  # additive increase (e.g., +0.2)
+
+TEST_NAME = "baseline"
+
+OUTPUT_ROBOT_GIFS = True                # this serves to output the robot gifs on the evogym so we can better
+
+# ------------------ Run Directory and Logger Setup and Helper Functions ------------------
+def setup_run_directory():
+    base_dir = os.path.join("results", "complete_evolution")
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
+    # Use a timestamp to create a unique run folder.
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.path.join(base_dir, f"CoEvolutionary_run_{TEST_NAME}_{timestamp}_{SEED}")
+    os.makedirs(run_dir)
+
+    # Save the parameters to a file
+    params = {
+        "NUM_GENERATIONS": NUM_GENERATIONS,
+        "POPULATION_SIZE": POPULATION_SIZE,
+        "NUM_ELITE_ROBOTS": NUM_ELITE_ROBOTS,
+        "MUTATION_RATE": BASE_MUTATION_RATE,
+        "MIN_GRID_SIZE": MIN_GRID_SIZE,
+        "MAX_GRID_SIZE": MAX_GRID_SIZE,
+        "STEPS": STEPS,
+        "SCENARIO": SCENARIO,
+        "STAGNATION_LIMIT": STAGNATION_LIMIT,
+        "MUTATION_RATE_INCREASE": MUTATION_RATE_INCREASE,
+        "MUTATION_METHOD": MUTATION_METHOD,
+        "CROSSOVER_METHOD": CROSSOVER_METHOD,
+        "VOXEL_TYPES": VOXEL_TYPES,
+        "CONTROLLER": "Custom",
+        "TEST_NAME": TEST_NAME,
+        "SEED": SEED,
+    }
+
+    params_file = os.path.join(run_dir, "parameters.txt")
+    with open(params_file, "w") as f:
+        for key, value in params.items():
+            f.write(f"{key}: {value}\n")
+
+    return run_dir
+
+
+# these will be set each run:
+RUN_DIR = None
+LOG_FILE = None
+
+def log(message):
+    # Print to console and also write to log file.
+    print(message)
+    with open(LOG_FILE, "a") as f:
+        f.write(message + "\n")
 
 def apply_mutation(robot, rate):
     if MUTATION_METHOD == 'random':
@@ -611,7 +671,20 @@ def parallel_fit_eval(population):
 
 
 def main():
-    population = [Genotype() for _ in range(5)]
+    RUN_DIR = setup_run_directory()
+    population = [Genotype() for _ in range(POPULATION_SIZE)]
+
+    # per‐generation stats
+    gen_avg_fitness = []
+    gen_std_fitness = []
+    gen_best_per_gen = []
+    best_per_gen_ever = []
+
+    # Stagnation tracking
+    best_all_time = -float('inf')
+
+    stagnation_counter = 0
+    current_mutation_rate = BASE_MUTATION_RATE
 
     for gen in range(NUM_GENERATIONS):
         for i in range(1):
@@ -625,7 +698,38 @@ def main():
         #fits = parallel_fit_eval(population)
         fits = [evaluate_fitness(genotype) for genotype in population]
         print(fits)
-        print(f"Gen {gen:03d}  best={max(fits):.2f}  mean={np.mean(fits):.2f}")
+
+        gen_mean = float(np.mean(fits))
+        gen_std = float(np.std(fits))
+        gen_best = float(np.max(fits))
+
+        gen_avg_fitness.append(gen_mean)
+        gen_std_fitness.append(gen_std)
+        gen_best_per_gen.append(gen_best)
+
+        # update all‐time best
+        best_all_time = max(best_all_time, gen_best)
+        best_per_gen_ever.append(best_all_time)
+
+        #print(f"Gen {gen:03d} | Best: {gen_best:.3f} | Mean: {gen_best:.3f} | MutRate: {current_mutation_rate:.3f}")
+        log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} ±{gen_std:.3f} | All‐Time Best: {best_all_time:.3f} | MutRate: {current_mutation_rate:.3f}")
+
+        # === Check stagnation ===
+        if gen_best > best_all_time:
+            best_all_time = gen_best
+            stagnation_counter = 0
+            current_mutation_rate = BASE_MUTATION_RATE
+        else:
+            stagnation_counter += 1
+
+
+        # === Handle stagnation ===
+        if stagnation_counter >= STAGNATION_LIMIT:
+            log(f"> Stagnation reached {STAGNATION_LIMIT} generations: Increasing mutation rate by 0.05 to {current_mutation_rate:.3f}")
+            # Increase mutation rate
+            current_mutation_rate = min(1.0, current_mutation_rate + MUTATION_RATE_INCREASE)
+
+            stagnation_counter = 0
 
         # Sort population by fitness to get the top individuals
         sorted_indices = np.argsort(fits)
@@ -664,8 +768,8 @@ def main():
             child1, child2 = apply_crossover(parent1.structure, parent2.structure)
 
             # Mutation
-            child1 = apply_mutation(child1, 0.05) # TODO implement dynamic stagnation handling and mutation rate adjustment
-            child2 = apply_mutation(child2, 0.05)
+            child1 = apply_mutation(child1, current_mutation_rate)
+            child2 = apply_mutation(child2, current_mutation_rate)
 
             # TODO XANATÃO!!
             # TODO fix this, this was only made like this because of the Genotype object (either fix the logic here or pass the genotype object
@@ -681,7 +785,32 @@ def main():
 
         population = new_population
 
+    # Plot & save
+    plt.figure()
+    plt.errorbar(
+        range(NUM_GENERATIONS),
+        gen_avg_fitness,
+        yerr=gen_std_fitness,
+        label="mean ± std"
+    )
+    plt.plot(
+        range(NUM_GENERATIONS),
+        gen_best_per_gen,
+        label="generation best"
+    )
+    plt.plot(
+        range(NUM_GENERATIONS),
+        best_per_gen_ever,
+        label="all‐time best"
+    )
+    plt.xlabel("Generation")
+    plt.ylabel("Fitness")
+    plt.legend()
+
+    plot_path = os.path.join(RUN_DIR, "fitness_plot.png")
+    plt.savefig(plot_path)
+    plt.close()
 
 if __name__ == '__main__':
-    multiprocessing.freeze_support()
+    #multiprocessing.freeze_support()
     main()
