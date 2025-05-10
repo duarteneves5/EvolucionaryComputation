@@ -42,7 +42,7 @@ NUM_GENERATIONS = 100
 CMA_ITERS = 3 # 3 controller optimizations for 1 structure optimization
 POPULATION_SIZE = 15
 NUM_ELITE_ROBOTS = 1  # keep only the best robot
-STEPS = 500
+STEPS = 1500
 
 CONTROLLER = alternating_gait
 
@@ -512,228 +512,6 @@ class CMAESOptimizer:
         return pop, fitnesses
 
 
-'''
-class BodyFitness:
-    """
-    Scenario-aware fitness usable both by CMA-ES (optimising weights)
-    and by higher-level genotype evaluation.  Works for CaveCrawler-v0
-    and GapJumper-v0.
-    """
-    def __init__(self, body, mask):
-        self.body = body
-        self.mask = mask          # boolean mask selecting actuator indices
-
-        # scenario-specific reference values
-        if SCENARIO.startswith("Cave"):
-            self.DIST_REF  = 60.0
-            self.SPEED_REF = 0.05
-            self.GAP_X     = None
-        elif SCENARIO.startswith("Gap"):
-            self.DIST_REF  = 40.0
-            self.SPEED_REF = 0.08
-            self.GAP_X     = 25.0     # centre of the chasm in env metres
-        else:
-            raise ValueError(f"Unsupported scenario {SCENARIO}")
-
-    # ------------------------------------------------------------------
-    def __call__(self, weights, generation: int = 0):
-        # ------------- rebuild the controller -------------
-        brain = NeuralController(MAX_BRAIN_INPUT_SIZE, MAX_BRAIN_OUTPUT_SIZE)
-        set_weights(brain, weights, reconstruct_weights=True)
-
-        env = gym.make(
-            SCENARIO,
-            max_episode_steps=STEPS,
-            body=self.body,
-            connections=get_full_connectivity(self.body)
-        )
-        sim = env.sim
-
-        obs, _ = env.reset()
-        pad = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
-        pad[:len(obs)] = obs
-
-        # ------------- accumulators -------------
-        start_x      = sim.object_pos_at_time(0, "robot")[0].mean()
-        prev_act     = np.zeros(np.count_nonzero(self.mask))
-        prev_vel     = np.zeros_like(prev_act)
-        total_energy = 0.0
-        jerk_sum     = 0.0
-        fell         = False
-
-        # ------------- episode roll-out -------------
-        for _ in range(STEPS):
-            with torch.no_grad():
-                logits = brain(torch.from_numpy(pad).unsqueeze(0)).squeeze(0).numpy()
-            act = logits[self.mask]
-
-            vel          = act - prev_act
-            total_energy += np.sum(np.abs(act * vel))
-            jerk_sum     += np.sum((vel - prev_vel) ** 2)
-            prev_act, prev_vel = act, vel
-
-            obs, _, term, trunc, _ = env.step(act)
-            if term or trunc:
-                fell = True
-                break
-            pad[:len(obs)] = obs
-
-        tf       = sim.get_time()
-        end_x    = sim.object_pos_at_time(tf, "robot")[0].mean()
-        distance = max(0.0, end_x - start_x)
-        speed    = distance / max(1e-6, tf)
-        env.close()
-
-        # ------------- term scores -------------
-        progress   = soft_norm(distance, self.DIST_REF)
-        velocity   = soft_norm(speed,     self.SPEED_REF)
-        efficiency = soft_norm(distance / (total_energy + 1e-6) * 1e5, 0.4)
-        smoothness = 1.0 / (1.0 + jerk_sum / (STEPS * 10.0))
-
-        if self.GAP_X is None:        # CaveCrawler
-            goal_bonus = distance / self.DIST_REF
-        else:                         # GapJumper
-            goal_bonus = goal_sigmoid(end_x, self.GAP_X)
-
-        if fell:
-            progress   *= 0.2
-            velocity   *= 0.2
-            efficiency *= 0.2
-            smoothness *= 0.2
-            goal_bonus  = 0.0
-
-        # ------------- weighted blend -------------
-        fitness = (
-            0.45 * progress   +
-            0.25 * velocity   +
-            0.15 * efficiency +
-            0.10 * smoothness +
-            0.05 * goal_bonus
-        )
-        return fitness
-'''
-class OLDBodyFitness:
-    """
-    Reference-free fitness.
-    Positive terms:
-        • distance travelled           (metres)
-        • average horizontal speed     (m/s)
-        • goal bonus                   (0 or 1)
-
-    Cost terms (subtracted):
-        • total actuation energy proxy (|τ·Δτ|)
-        • jerk of actuation sequence   (Σ(Δacc)²)
-
-    Final formula
-        fitness = + 1.0 * distance
-                  + 5.0 * speed
-                  + 50.0 * goal_bonus
-                  - 1e-6 * total_energy
-                  - 1e-3 * jerk_sum
-    """
-    def __init__(self, body, mask):
-        self.body = body
-        self.mask = mask
-
-        # determine whether we can compute a goal bonus
-        if SCENARIO.startswith("Gap"):
-            self.GAP_X = 25.0       # centre of chasm, adjust if env differs
-        else:
-            self.GAP_X = None       # CaveCrawler uses only distance
-
-    # ------------------------------------------------------------
-    def __call__(self, weights, generation=0, return_components=False):
-        # ---------- rebuild brain ----------
-        brain = NeuralController(MAX_BRAIN_INPUT_SIZE, MAX_BRAIN_OUTPUT_SIZE)
-        set_weights(brain, weights, reconstruct_weights=True)
-
-        env = gym.make(
-            SCENARIO,
-            max_episode_steps=STEPS,
-            body=self.body,
-            connections=get_full_connectivity(self.body)
-        )
-        sim = env.sim
-
-        obs, _ = env.reset()
-        pad = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
-        pad[:len(obs)] = obs  # ① initialise with first obs
-        pad_t = torch.from_numpy(pad).unsqueeze(0)
-
-        start_x = sim.object_pos_at_time(0, "robot")[0].mean()
-        prev_x = start_x
-        prev_act = np.zeros(np.count_nonzero(self.mask))
-        prev_acc = np.zeros_like(prev_act)
-
-        dist_acc = 0.0
-        energy = 0.0
-        jerk_sum = 0.0
-        fell = False
-
-        t_reward = 0.0
-        stalled = 0
-        # ---------- episode ----------
-        for _ in range(STEPS):
-            with torch.no_grad():
-                act = brain(pad_t).squeeze(0).numpy()[self.mask]
-
-            vel = act - prev_act
-            energy += np.sum(np.abs(act * vel))
-            jerk_sum += np.sum((vel - prev_acc) ** 2)
-            prev_act, prev_acc = act, vel
-
-            obs, reward, term, trunc, _ = env.step(act)
-            t_reward += reward
-            cur_x = sim.object_pos_at_time(sim.get_time(), "robot")[0].mean()
-            dist_acc = cur_x - start_x  # always non-negative; we clamp later
-            walked_distance = cur_x - prev_x
-            prev_x = cur_x
-
-            if walked_distance < 0.01:
-                stalled += 1
-            else:
-                stalled = 0
-            if stalled > 100:
-                break
-
-
-            if term or trunc:
-                fell = True
-                break
-
-            pad[:] = 0.0  # clear and refill (same buffer)
-            pad[:len(obs)] = obs
-
-        env.close()
-
-        distance = max(0.0, dist_acc)
-        speed = distance / max(1e-6, sim.get_time())
-        efficiency = distance / (energy + 1e-6)
-
-        goal_bonus = 0.0
-        if self.GAP_X is not None and (start_x + distance) >= self.GAP_X:
-            goal_bonus = 50.0
-
-        if fell:
-            goal_bonus *= 0.0  # no bonus if it crashes
-            speed *= 0.2
-            efficiency *= 0.2
-
-        # ---------- weighted sum ----------
-        fitness = (
-                + 3.0 * distance  # meters
-                + 8.0 * speed  # m/s (typical 0–0.1)
-                + 20.0 * efficiency  # m / (act-energy)
-                + goal_bonus
-                - 1e-7 * energy  # much lighter penalty
-                - 1e-4 * jerk_sum
-        )
-
-        if return_components:
-            return (t_reward, distance, speed, efficiency,
-                    goal_bonus, energy, jerk_sum, fell)
-        return t_reward
-
 # ------------------------------------------------------------------------
 #  Safe, task-agnostic fitness for EvoGym CaveCrawler / GapJumper
 # ------------------------------------------------------------------------
@@ -760,7 +538,7 @@ class BodyFitness:
     c_d            = 0.20    # distance shaping coefficient
     c_s            = 0.40    # speed shaping coefficient
     c_E            = 1e-7    # energy cost coefficient
-    c_J            = 1e-4    # jerk  cost coefficient
+    c_J            = 1e-6    # jerk  cost coefficient
     CRASH_PENALTY  = 20.0
     GAP_BONUS      = 100.0   # added once end_x passes the gap centre
 
@@ -840,8 +618,8 @@ class BodyFitness:
         fitness += self.GAP_BONUS if (self.gap_x and end_x >= self.gap_x) else 0.0
         fitness -= self.c_E * energy
         fitness -= self.c_J * jerk_sum
-        if fell:
-            fitness -= self.CRASH_PENALTY
+        #if fell:
+            #fitness -= self.CRASH_PENALTY
 
         if return_components:
             return (
@@ -849,9 +627,8 @@ class BodyFitness:
                 R_env,
                 distance,
                 speed,
-                energy,
-                jerk_sum,
-                int(fell),
+                self.c_E * energy,
+                self.c_J * jerk_sum,
             )
 
         return fitness
@@ -919,8 +696,8 @@ def calc_fitness(structure: np.ndarray, flat_weights: np.ndarray):
 
     # BodyFitness is cheap to construct (just stores numpy arrays)
     fitness_fn = BodyFitness(structure, mask)
-    fitness, R_env, distance, speed, energy, jerk_sum, fell,  = fitness_fn(flat_weights, return_components=True)
-    return fitness, R_env, distance, speed, energy, jerk_sum, fell
+    fitness, R_env, distance, speed, energy, jerk_sum,  = fitness_fn(flat_weights, return_components=True)
+    return fitness, R_env, distance, speed, energy, jerk_sum
 
 
 
@@ -946,7 +723,6 @@ def main():
     with csv_path.open("w", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow([
-            "generation", "ind_idx",
             "fitness", "base_reward", "distance", "speed", "energy", "jerk_sum",
         ])
 
@@ -972,7 +748,7 @@ def main():
 
             # ---- run them in parallel ----
             fits_vals = list(GLOBAL_EXEC.map(calc_fitness, structures, weights))
-            fits, base_rw_vals, distance_vals, speed_vals, energy_vals, jerk_vals, fell_vals = map(
+            fits, base_rw_vals, distance_vals, speed_vals, energy_vals, jerk_vals = map(
                 np.array, zip(*fits_vals)
             )
 
@@ -980,8 +756,8 @@ def main():
                 writer = csv.writer(csvfile)
                 for idx, (fit, br, d, s, eg, j, f) in enumerate(zip(
                         fits, base_rw_vals, distance_vals,
-                        speed_vals, energy_vals, jerk_vals, fell_vals)):
-                    writer.writerow([fit, br, d, s, eg, j, int(f)])
+                        speed_vals, energy_vals, jerk_vals)):
+                    writer.writerow([fit, br, d, s, eg, j])
 
 
             print(fits)
@@ -1046,11 +822,11 @@ def main():
             gen_best_per_gen.append(gen_best)
 
             # update all‐time best
-            best_all_time = max(best_all_time, gen_best)
-            best_per_gen_ever.append(best_all_time)
+            best_fitness = max(best_fitness, gen_best)
+            best_per_gen_ever.append(best_fitness)
 
             #print(f"Gen {gen:03d} | Best: {gen_best:.3f} | Mean: {gen_best:.3f} | MutRate: {current_mutation_rate:.3f}")
-            log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} ±{gen_std:.3f} | All‐Time Best: {best_all_time:.3f} | MutRate: {current_mutation_rate:.3f}")
+            log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} ±{gen_std:.3f} | All‐Time Best: {best_fitness:.3f} | MutRate: {current_mutation_rate:.3f}")
 
             # === Check stagnation ===
             if gen_best > best_fitness:
