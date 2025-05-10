@@ -38,9 +38,9 @@ VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
 
 NUM_GENERATIONS = 100
 CMA_ITERS = 3 # 3 controller optimizations for 1 structure optimization
-POPULATION_SIZE = 25
+POPULATION_SIZE = 15
 NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.06))  # 6% elitism
-STEPS = 1500
+STEPS = 500
 
 
 # Dynamic stagnation handling parameters
@@ -107,7 +107,7 @@ LOG_FILE = "log.txt"
 def log(message):
     # Print to console and also write to log file.
     print(message)
-    with open(LOG_FILE, "a") as f:
+    with open(LOG_FILE, "a", encoding='utf-8') as f:
         f.write(message + "\n")
 
 def apply_mutation(robot, rate):
@@ -466,11 +466,13 @@ class CMAESOptimizer:
         for i in range(self.pop_size):
             self.all_samples.append((generation, pop[i, 0], pop[i, 1]))
 
-        fitnesses = list(self.executor.map(
-            self.fitness_function,
-            pop,
-            itertools.repeat(generation))
-        )
+        #fitnesses = list(self.executor.map(
+        #    self.fitness_function,
+        #    pop,
+        #    itertools.repeat(generation))
+        #)
+        fitnesses = [self.fitness_function(ind, generation)
+                     for ind in self.sample_population()]
 
         self.previous_gen_best_fitness = self.current_gen_best_fitness
         self.current_gen_best_fitness = max(fitnesses)
@@ -611,7 +613,8 @@ class BodyFitness:
             self.GAP_X = None       # CaveCrawler uses only distance
 
     # ------------------------------------------------------------
-    def __call__(self, weights, generation: int = 0, return_components=False):
+    def __call__(self, weights, generation=0, return_components=False):
+        # ---------- rebuild brain ----------
         brain = NeuralController(MAX_BRAIN_INPUT_SIZE, MAX_BRAIN_OUTPUT_SIZE)
         set_weights(brain, weights, reconstruct_weights=True)
 
@@ -625,67 +628,71 @@ class BodyFitness:
 
         obs, _ = env.reset()
         pad = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
-        pad[:len(obs)] = obs
+        pad[:len(obs)] = obs  # ① initialise with first obs
+        pad_t = torch.from_numpy(pad).unsqueeze(0)
 
-        start_x      = sim.object_pos_at_time(0, "robot")[0].mean()
-        prev_act     = np.zeros(np.count_nonzero(self.mask))
-        prev_acc     = np.zeros_like(prev_act)
-        total_energy = 0.0
-        jerk_sum     = 0.0
-        fell         = False
+        start_x = sim.object_pos_at_time(0, "robot")[0].mean()
+        prev_act = np.zeros(np.count_nonzero(self.mask))
+        prev_acc = np.zeros_like(prev_act)
 
+        dist_acc = 0.0
+        energy = 0.0
+        jerk_sum = 0.0
+        fell = False
+
+        # ---------- episode ----------
         for _ in range(STEPS):
             with torch.no_grad():
-                logits = brain(torch.from_numpy(pad).unsqueeze(0)).squeeze(0).numpy()
-            act = logits[self.mask]
+                act = brain(pad_t).squeeze(0).numpy()[self.mask]
 
-            vel          = act - prev_act
-            total_energy += np.sum(np.abs(act * vel))
-            jerk_sum     += np.sum((vel - prev_acc) ** 2)
+            vel = act - prev_act
+            energy += np.sum(np.abs(act * vel))
+            jerk_sum += np.sum((vel - prev_acc) ** 2)
             prev_act, prev_acc = act, vel
 
             obs, _, term, trunc, _ = env.step(act)
+            cur_x = sim.object_pos_at_time(sim.get_time(), "robot")[0].mean()
+            dist_acc = cur_x - start_x  # always non-negative; we clamp later
+
             if term or trunc:
                 fell = True
                 break
+
+            pad[:] = 0.0  # clear and refill (same buffer)
             pad[:len(obs)] = obs
-
-        tf       = sim.get_time()
-        end_x    = sim.object_pos_at_time(tf, "robot")[0].mean()
-        distance = max(0.0, end_x - start_x)
-        speed    = distance / max(1e-6, tf)
-
-        # -------- goal bonus --------
-        if self.GAP_X is None:              # CaveCrawler
-            goal_bonus = 0.0                # distance already reflects success
-        else:                               # GapJumper
-            goal_bonus = 1.0 if end_x >= self.GAP_X else 0.0
 
         env.close()
 
-        if fell:                 # crashed or timed out → heavy penalty
-            distance   *= 0.2
-            speed      *= 0.2
-            goal_bonus  = 0.0
-            total_energy *= 5.0           # punish wasteful failures more
-            jerk_sum     *= 5.0
+        distance = max(0.0, dist_acc)
+        speed = distance / max(1e-6, sim.get_time())
+        efficiency = distance / (energy + 1e-6)
 
-        # -------- weighted sum --------
+        goal_bonus = 0.0
+        if self.GAP_X is not None and (start_x + distance) >= self.GAP_X:
+            goal_bonus = 50.0
+
+        if fell:
+            goal_bonus *= 0.0  # no bonus if it crashes
+            speed *= 0.2
+            efficiency *= 0.2
+
+        # ---------- weighted sum ----------
         fitness = (
-            + 1.0  * distance
-            + 5.0  * speed
-            + 50.0 * goal_bonus
-            - 1e-6 * total_energy
-            - 1e-3 * jerk_sum
+                + 3.0 * distance  # meters
+                + 8.0 * speed  # m/s (typical 0–0.1)
+                + 20.0 * efficiency  # m / (act-energy)
+                + goal_bonus
+                - 1e-7 * energy  # much lighter penalty
+                - 1e-4 * jerk_sum
         )
 
         if return_components:
-            return (fitness, distance, speed, goal_bonus,
-                    total_energy, jerk_sum, fell)
+            return (fitness, distance, speed, efficiency,
+                    goal_bonus, energy, jerk_sum, fell)
         return fitness
 
 
-MAX_BRAIN_INPUT_SIZE = 98 # 86
+MAX_BRAIN_INPUT_SIZE = 102 # 86
 MAX_BRAIN_OUTPUT_SIZE = 25
 class Genotype:
     def __init__(self, structure=None, weights=None):
@@ -746,8 +753,9 @@ def calc_fitness(structure: np.ndarray, flat_weights: np.ndarray):
 
     # BodyFitness is cheap to construct (just stores numpy arrays)
     fitness_fn = BodyFitness(structure, mask)
-    fitness, distance, speed, goal_bonus, total_energy, jerk_sum, fell = fitness_fn(flat_weights, return_components=True)
-    return fitness, distance, speed, goal_bonus, total_energy, jerk_sum, fell
+    fitness, distance, speed, efficiency, goal_bonus, energy, jerk_sum, fell,  = fitness_fn(flat_weights, return_components=True)
+    return fitness, distance, speed, efficiency, goal_bonus, energy, jerk_sum, fell
+
 
 
 def main():
@@ -771,176 +779,182 @@ def main():
         writer = csv.writer(csvfile)
         writer.writerow([
             "generation", "ind_idx",
-            "fitness", "distance", "speed", "goal_bonus",
+            "fitness", "distance", "speed", "efficiency", "goal_bonus",
             "energy", "jerk", "fell"
         ])
 
     best_weights = None
 
-    for gen in range(NUM_GENERATIONS):
-        start = time.time()
-        for i in range(CMA_ITERS):
-            for genotype in population:
-                genotype.cma.step(i)
-                #print("Stepped!")
-            for genotype in population:
-                genotype.update_weights(genotype.cma.m, reconstruct_weights=True)
-                #print("Updated!")
-        end = time.time()
-        #print(f'ControllerEvo took {end - start} seconds with {CMA_ITERS} iterations')
+    try:
+        for gen in range(NUM_GENERATIONS):
+            start = time.time()
+            for i in range(CMA_ITERS):
+                for genotype in population:
+                    genotype.cma.step(i)
+                    #print("Stepped!")
+                for genotype in population:
+                    genotype.update_weights(genotype.cma.m, reconstruct_weights=True)
+                    #print("Updated!")
+            end = time.time()
+            #print(f'ControllerEvo took {end - start} seconds with {CMA_ITERS} iterations')
 
-        start = time.time()
-        # ---- gather arguments for all individuals ----
-        structures = [g.structure for g in population]
-        weights = [get_weights(g.brain, flatten=True) for g in population]
+            start = time.time()
+            # ---- gather arguments for all individuals ----
+            structures = [g.structure for g in population]
+            weights = [get_weights(g.brain, flatten=True) for g in population]
 
-        # ---- run them in parallel ----
-        fits_vals = list(GLOBAL_EXEC.map(calc_fitness, structures, weights))
-        fits, dist_vals, speed_vals, goal_vals, energy_vals, jerk_vals, fell_vals = map(
-            np.array, zip(*fits_vals)
-        )
-        with csv_path.open("a", newline="") as csvfile:
-            writer = csv.writer(csvfile)
-            for idx, (fit, d, s, g, e, j, f) in enumerate(zip(
-                    fits, dist_vals, speed_vals,
-                    goal_vals, energy_vals, jerk_vals, fell_vals)):
-                writer.writerow([gen, idx, fit, d, s, g, e, j, int(f)])
-
-
-        #print(fits)
-        end = time.time()
-        #print(f'Fitness Evaluation took {end - start} seconds')
-
-        gen_mean = float(np.mean(fits))
-        gen_std = float(np.std(fits))
-        gen_best = float(np.max(fits))
-
-        best_idx = int(np.argmax(fits))
-        best_structure = population[best_idx].structure
-
-        if gen_best > best_all_time:
-            best_genotype = population[best_idx]
-
-        plt.figure(figsize=(3, 3))
-        plt.imshow(best_structure, cmap="viridis", vmin=0, vmax=4)
-        plt.axis("off")
-        plt.title(f"Gen {gen} best")
-        struct_dir = Path(RUN_DIR) / "structures"
-        struct_dir.mkdir(exist_ok=True)
-        plt.savefig(struct_dir / f"gen_{gen:03d}.png", bbox_inches="tight")
-        plt.close()
-
-        if gen % 5 == 0:
-            gif_dir = Path(RUN_DIR) / "gifs"
-            gif_dir.mkdir(exist_ok=True)
-            gif_path = gif_dir / f"gen_{gen:03d}.gif"
-
-            # run one episode & capture frames
-            frames = []
-            g = population[best_idx]
-            env = gym.make(
-                SCENARIO, max_episode_steps=STEPS,
-                body=g.structure,
-                connections=get_full_connectivity(g.structure)
+            # ---- run them in parallel ----
+            fits_vals = list(GLOBAL_EXEC.map(calc_fitness, structures, weights))
+            fits, dist_vals, speed_vals, efficiency_vals, goal_vals, energy_vals, jerk_vals, fell_vals = map(
+                np.array, zip(*fits_vals)
             )
-            sim = env.sim
-            viewer = EvoViewer(sim)
-            viewer.track_objects("robot")
-            obs, _ = env.reset()
-            pad = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
 
-            for _ in range(STEPS):
-                pad[:len(obs)] = obs
-                action = g.act(pad)
-                viewer.render("screen")  # draw on buffer
-                frames.append(viewer.render("rgb_array"))
-                obs, _, term, trunc, _ = env.step(action)
-                if term or trunc:
-                    break
-
-            viewer.close();
-            env.close()
-            imageio.mimsave(gif_path, frames, fps=30)
-
-        gen_avg_fitness.append(gen_mean)
-        gen_std_fitness.append(gen_std)
-        gen_best_per_gen.append(gen_best)
-
-        # update all‐time best
-        best_all_time = max(best_all_time, gen_best)
-        best_per_gen_ever.append(best_all_time)
-
-        #print(f"Gen {gen:03d} | Best: {gen_best:.3f} | Mean: {gen_best:.3f} | MutRate: {current_mutation_rate:.3f}")
-        log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} ±{gen_std:.3f} | All‐Time Best: {best_all_time:.3f} | MutRate: {current_mutation_rate:.3f}")
-
-        # === Check stagnation ===
-        if gen_best > best_all_time:
-            best_all_time = gen_best
-            stagnation_counter = 0
-            current_mutation_rate = BASE_MUTATION_RATE
-        else:
-            stagnation_counter += 1
+            with csv_path.open("a", newline="") as csvfile:
+                writer = csv.writer(csvfile)
+                for idx, (fit, d, s, eff, g, e, j, f) in enumerate(zip(
+                        fits, dist_vals, speed_vals,
+                        efficiency_vals, goal_vals, energy_vals, jerk_vals, fell_vals)):
+                    writer.writerow([gen, idx, fit, d, s, eff, g, e, j, int(f)])
 
 
-        # === Handle stagnation ===
-        if stagnation_counter >= STAGNATION_LIMIT:
-            log(f"> Stagnation reached {STAGNATION_LIMIT} generations: Increasing mutation rate by 0.05 to {current_mutation_rate:.3f}")
-            # Increase mutation rate
-            current_mutation_rate = min(1.0, current_mutation_rate + MUTATION_RATE_INCREASE)
+            #print(fits)
+            end = time.time()
+            #print(f'Fitness Evaluation took {end - start} seconds')
 
-            stagnation_counter = 0
+            gen_mean = float(np.mean(fits))
+            gen_std = float(np.std(fits))
+            gen_best = float(np.max(fits))
 
-        start = time.time()
-        # Sort population by fitness to get the top individuals
-        sorted_indices = np.argsort(fits)
-        new_population = []
+            best_idx = int(np.argmax(fits))
+            best_structure = population[best_idx].structure
 
-        # Elitism: keep top N
-        for i in sorted_indices[-NUM_ELITE_ROBOTS:]:
-            new_population.append(population[i])
+            if gen_best > best_all_time:
+                best_genotype = population[best_idx]
 
-        # Fill the rest of the new population
-        # Make a copy so we don't remove from original 'population' while selecting
-        pop_copy = population[:]
+            plt.figure(figsize=(3, 3))
+            plt.imshow(best_structure, cmap="viridis", vmin=0, vmax=4)
+            plt.axis("off")
+            plt.title(f"Gen {gen} best")
+            struct_dir = Path(RUN_DIR) / "structures"
+            struct_dir.mkdir(exist_ok=True)
+            plt.savefig(struct_dir / f"gen_{gen:03d}.png", bbox_inches="tight")
+            plt.close()
 
-        fitness_copy = fits[:]
+            if gen % 5 == 0:
+                gif_dir = Path(RUN_DIR) / "gifs"
+                gif_dir.mkdir(exist_ok=True)
+                gif_path = gif_dir / f"gen_{gen:03d}.gif"
 
-        while len(new_population) < POPULATION_SIZE:
+                # run one episode & capture frames
+                frames = []
+                g = population[best_idx]
+                env = gym.make(
+                    SCENARIO, max_episode_steps=STEPS,
+                    body=g.structure,
+                    connections=get_full_connectivity(g.structure)
+                )
+                sim = env.sim
+                viewer = EvoViewer(sim)
+                viewer.track_objects("robot")
+                obs, _ = env.reset()
+                pad = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
 
-            # Parent selection
-            while True:
-                parent1, idx1 = select_parent(pop_copy, fitness_copy)
-                parent2, idx2 = select_parent(pop_copy, fitness_copy)
-                if idx2 != idx1:
-                    break
+                for _ in range(STEPS):
+                    pad[:len(obs)] = obs
+                    action = g.act(pad)
+                    viewer.render("screen")  # draw on buffer
+                    frames.append(viewer.render("rgb_array"))
+                    obs, _, term, trunc, _ = env.step(action)
+                    if term or trunc:
+                        break
 
-            # Parent selection
-            # parent1, idx1 = select_parent(pop_copy, fitness_copy)
-            # Remove it from the "pool" so we don't select the exact same index again
-            # pop_copy.pop(idx1)
-            # fitness_copy.pop(idx1)
+                viewer.close();
+                env.close()
+                #imageio.mimsave(gif_path, frames, fps=30)
+                GLOBAL_EXEC.submit(imageio.mimsave, gif_path, frames, fps=15)
 
-            # parent2, idx2 = select_parent(pop_copy, fitness_copy)
-            # Important: do not pop idx2 from pop_copy yet, because removing idx1 changes indexing
-            # but for simplicity, we won't re-use the same parent in one iteration, so it's okay.
+            gen_avg_fitness.append(gen_mean)
+            gen_std_fitness.append(gen_std)
+            gen_best_per_gen.append(gen_best)
 
-            # Crossover
-            child1, child2 = apply_crossover(parent1.structure, parent2.structure)
+            # update all‐time best
+            best_all_time = max(best_all_time, gen_best)
+            best_per_gen_ever.append(best_all_time)
 
-            # Mutation
-            child1_struct = apply_mutation(child1, current_mutation_rate)
-            child2_struct = apply_mutation(child2, current_mutation_rate)
+            #print(f"Gen {gen:03d} | Best: {gen_best:.3f} | Mean: {gen_best:.3f} | MutRate: {current_mutation_rate:.3f}")
+            log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} ±{gen_std:.3f} | All‐Time Best: {best_all_time:.3f} | MutRate: {current_mutation_rate:.3f}")
 
-            new_child1 = Genotype(structure=child1_struct, weights=get_weights(parent1.brain, flatten=True))
-            new_population.append(new_child1)
+            # === Check stagnation ===
+            if gen_best > best_all_time:
+                best_all_time = gen_best
+                stagnation_counter = 0
+                current_mutation_rate = BASE_MUTATION_RATE
+            else:
+                stagnation_counter += 1
 
-            if len(new_population) < POPULATION_SIZE:
-                new_child2 = Genotype(structure=child2_struct, weights=get_weights(parent1.brain, flatten=True))
-                new_population.append(new_child2)
 
-        population = new_population
-        end = time.time()
-        #print(f'StructureEvo took {end - start} seconds')
+            # === Handle stagnation ===
+            if stagnation_counter >= STAGNATION_LIMIT:
+                log(f"> Stagnation reached {STAGNATION_LIMIT} generations: Increasing mutation rate by 0.05 to {current_mutation_rate:.3f}")
+                # Increase mutation rate
+                current_mutation_rate = min(1.0, current_mutation_rate + MUTATION_RATE_INCREASE)
+
+                stagnation_counter = 0
+
+            start = time.time()
+            # Sort population by fitness to get the top individuals
+            sorted_indices = np.argsort(fits)
+            new_population = []
+
+            # Elitism: keep top N
+            for i in sorted_indices[-NUM_ELITE_ROBOTS:]:
+                new_population.append(population[i])
+
+            # Fill the rest of the new population
+            # Make a copy so we don't remove from original 'population' while selecting
+            pop_copy = population[:]
+
+            fitness_copy = fits[:]
+
+            while len(new_population) < POPULATION_SIZE:
+
+                # Parent selection
+                while True:
+                    parent1, idx1 = select_parent(pop_copy, fitness_copy)
+                    parent2, idx2 = select_parent(pop_copy, fitness_copy)
+                    if idx2 != idx1:
+                        break
+
+                # Parent selection
+                # parent1, idx1 = select_parent(pop_copy, fitness_copy)
+                # Remove it from the "pool" so we don't select the exact same index again
+                # pop_copy.pop(idx1)
+                # fitness_copy.pop(idx1)
+
+                # parent2, idx2 = select_parent(pop_copy, fitness_copy)
+                # Important: do not pop idx2 from pop_copy yet, because removing idx1 changes indexing
+                # but for simplicity, we won't re-use the same parent in one iteration, so it's okay.
+
+                # Crossover
+                child1, child2 = apply_crossover(parent1.structure, parent2.structure)
+
+                # Mutation
+                child1_struct = apply_mutation(child1, current_mutation_rate)
+                child2_struct = apply_mutation(child2, current_mutation_rate)
+
+                new_child1 = Genotype(structure=child1_struct, weights=get_weights(parent1.brain, flatten=True))
+                new_population.append(new_child1)
+
+                if len(new_population) < POPULATION_SIZE:
+                    new_child2 = Genotype(structure=child2_struct, weights=get_weights(parent1.brain, flatten=True))
+                    new_population.append(new_child2)
+
+            population = new_population
+            end = time.time()
+            #print(f'StructureEvo took {end - start} seconds')
+
+    except KeyboardInterrupt:
+        pass
 
     save_weights(best_genotype.brain, RUN_DIR+"/best_weights.pth")
 
