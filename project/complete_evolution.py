@@ -22,7 +22,7 @@ GLOBAL_EXEC = ProcessPoolExecutor(max_workers=os.cpu_count())
 # 'random', 'swap', or 'insert'
 MUTATION_METHOD = 'insert'
 # 'mask', 'one_point', 'two_point'
-CROSSOVER_METHOD = 'one_point'
+CROSSOVER_METHOD = 'two_point'
 
 SCENARIO = "CaveCrawler-v0"
 #SCENARIO = "GapJumper-v0"
@@ -761,7 +761,7 @@ def main():
     best_per_gen_ever = []
 
     # Stagnation tracking
-    best_all_time = -float('inf')
+    best_fitness = -float('inf')
 
     stagnation_counter = 0
     current_mutation_rate = BASE_MUTATION_RATE
@@ -818,7 +818,7 @@ def main():
         best_idx = int(np.argmax(fits))
         best_structure = population[best_idx].structure
 
-        if gen_best > best_all_time:
+        if gen_best > best_fitness:
             best_genotype = population[best_idx]
 
         plt.figure(figsize=(3, 3))
@@ -866,21 +866,22 @@ def main():
         gen_std_fitness.append(gen_std)
         gen_best_per_gen.append(gen_best)
 
-        # update all‐time best
-        best_all_time = max(best_all_time, gen_best)
-        best_per_gen_ever.append(best_all_time)
-
-        #print(f"Gen {gen:03d} | Best: {gen_best:.3f} | Mean: {gen_best:.3f} | MutRate: {current_mutation_rate:.3f}")
-        log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} ±{gen_std:.3f} | All‐Time Best: {best_all_time:.3f} | MutRate: {current_mutation_rate:.3f}")
 
         # === Check stagnation ===
-        if gen_best > best_all_time:
-            best_all_time = gen_best
+        if gen_best > best_fitness:
+            best_fitness = gen_best
+            best_genotype = population[best_idx]
             stagnation_counter = 0
             current_mutation_rate = BASE_MUTATION_RATE
         else:
             stagnation_counter += 1
 
+        # update all‐time best
+        best_fitness = max(best_fitness, gen_best)
+        best_per_gen_ever.append(best_fitness)
+
+        #print(f"Gen {gen:03d} | Best: {gen_best:.3f} | Mean: {gen_best:.3f} | MutRate: {current_mutation_rate:.3f}")
+        log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} ±{gen_std:.3f} | All‐Time Best: {best_fitness:.3f} | MutRate: {current_mutation_rate:.3f}")
 
         # === Handle stagnation ===
         if stagnation_counter >= STAGNATION_LIMIT:
