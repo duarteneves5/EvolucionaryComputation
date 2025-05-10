@@ -4,18 +4,19 @@ import random
 import numpy as np
 import torch
 import datetime
+import time
 import matplotlib.pyplot as plt
 import imageio
 import csv
 from pathlib import Path
-import utils
 import secrets
 from concurrent.futures import ProcessPoolExecutor
 from evogym import EvoWorld, EvoSim, EvoViewer, sample_robot, get_full_connectivity, is_connected
 from evogym.envs import *
+import utils
 import itertools
 from neural_controller import *
-
+from fixed_controllers import *
 
 GLOBAL_EXEC = ProcessPoolExecutor(max_workers=os.cpu_count())
 
@@ -42,11 +43,12 @@ POPULATION_SIZE = 15
 NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.06))  # 6% elitism
 STEPS = 500
 
-
+CONTROLLER = alternating_gait
 # Dynamic stagnation handling parameters
 STAGNATION_LIMIT = 5          # generations without all-time best improvement
 BASE_MUTATION_RATE = 0.05
 MUTATION_RATE_INCREASE = 0.2  # additive increase (e.g., +0.2)
+OUTPUT_POPULATION = True   # put with the other globals
 
 TEST_NAME = "baseline"
 
@@ -109,6 +111,23 @@ def log(message):
     print(message)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(message + "\n")
+
+# -------------------------------- SAVE FULL POPULATION --------------------------------
+def capture_population_frames(population, generation, scenario, steps,controller):
+    """
+    Save a tiny GIF for every robot in the current population.
+    Each GIF lives in   <RUN_DIR>/gen_<generation>/robot_<idx>.gif
+    """
+    # Create a folder for this generation if it doesn't exist.
+    gen_folder = os.path.join(RUN_DIR, f"gen_{generation}")
+    if not os.path.exists(gen_folder):
+        os.makedirs(gen_folder)
+
+    # Loop over each robot in the population.
+    for idx, robot in enumerate(population):
+        filename = os.path.join(gen_folder, f"robot_{idx}.gif")
+        # Capture a GIF for each robot.
+        utils.create_gif(robot.structure, filename=filename, scenario=scenario, steps=2, controller=controller)
 
 def apply_mutation(robot, rate):
     if MUTATION_METHOD == 'random':
@@ -751,7 +770,9 @@ def calc_fitness(structure: np.ndarray, flat_weights: np.ndarray):
 
 
 def main():
+    global RUN_DIR, LOG_FILE
     RUN_DIR = setup_run_directory()
+    LOG_FILE = os.path.join(RUN_DIR, "log.txt")
     population = [Genotype() for _ in range(POPULATION_SIZE)]
 
     # per‐generation stats
@@ -879,6 +900,9 @@ def main():
         # update all‐time best
         best_fitness = max(best_fitness, gen_best)
         best_per_gen_ever.append(best_fitness)
+
+        if OUTPUT_POPULATION:
+            capture_population_frames(population, gen, SCENARIO, STEPS, CONTROLLER)
 
         #print(f"Gen {gen:03d} | Best: {gen_best:.3f} | Mean: {gen_best:.3f} | MutRate: {current_mutation_rate:.3f}")
         log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} ±{gen_std:.3f} | All‐Time Best: {best_fitness:.3f} | MutRate: {current_mutation_rate:.3f}")
