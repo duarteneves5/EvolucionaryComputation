@@ -40,7 +40,7 @@ VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
 NUM_GENERATIONS = 100
 CMA_ITERS = 3 # 3 controller optimizations for 1 structure optimization
 POPULATION_SIZE = 15
-NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.06))  # 6% elitism
+NUM_ELITE_ROBOTS = 1  # keep only the best robot
 STEPS = 500
 
 CONTROLLER = alternating_gait
@@ -735,6 +735,7 @@ class Genotype:
     def update_structure(self, new_structure):
         self.structure = new_structure
         self.update_mask()
+        self.fitness_wrapper = BodyFitness(self.structure, self.act_mask)
         self.cma = CMAESOptimizer(self.brain, POPULATION_SIZE, self.fitness_wrapper)
 
     def update_weights(self, weights, reconstruct_weights=False):
@@ -974,7 +975,7 @@ def main():
             new_population.append(new_child1)
 
             if len(new_population) < POPULATION_SIZE:
-                new_child2 = Genotype(structure=child2_struct, weights=get_weights(parent1.brain, flatten=True))
+                new_child2 = Genotype(structure=child2_struct, weights=get_weights(parent2.brain, flatten=True))
                 new_population.append(new_child2)
 
         population = new_population
