@@ -112,6 +112,16 @@ def log(message):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(message + "\n")
 
+# ------------------ Function to Capture Simulation Frame ------------------
+def capture_simulation_frame(robot, generation, scenario, steps, controller):
+
+    #utils.simulate_best_robot(robot, scenario, steps)
+
+    filename = os.path.join(RUN_DIR, f"simulation_frame_gen_{generation}.gif")
+
+    utils.create_gif(robot.structure, filename=filename, scenario=scenario, steps=2, controller=controller)
+
+
 # -------------------------------- SAVE FULL POPULATION --------------------------------
 def capture_population_frames(population, generation, scenario, steps,controller):
     """
@@ -838,6 +848,7 @@ def main():
 
         best_idx = int(np.argmax(fits))
         best_structure = population[best_idx].structure
+        best_robot = population[best_idx]
 
         if gen_best > best_fitness:
             best_genotype = population[best_idx]
@@ -900,6 +911,9 @@ def main():
         # update all‐time best
         best_fitness = max(best_fitness, gen_best)
         best_per_gen_ever.append(best_fitness)
+
+        if OUTPUT_ROBOT_GIFS:
+            capture_simulation_frame(best_robot, gen, SCENARIO, STEPS, CONTROLLER)
 
         if OUTPUT_POPULATION:
             capture_population_frames(population, gen, SCENARIO, STEPS, CONTROLLER)
