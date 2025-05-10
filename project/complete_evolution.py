@@ -24,8 +24,8 @@ MUTATION_METHOD = 'insert'
 # 'mask', 'one_point', 'two_point'
 CROSSOVER_METHOD = 'one_point'
 
-#SCENARIO = "CaveCrawler-v0"
-SCENARIO = "GapJumper-v0"
+SCENARIO = "CaveCrawler-v0"
+#SCENARIO = "GapJumper-v0"
 
 SEED = secrets.randbelow(1_000_000_000)
 print(f"SEEDING WITH {SEED}")
@@ -38,9 +38,9 @@ VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
 
 NUM_GENERATIONS = 100
 CMA_ITERS = 3 # 3 controller optimizations for 1 structure optimization
-POPULATION_SIZE = 25
+POPULATION_SIZE = 15
 NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.06))  # 6% elitism
-STEPS = 1500
+STEPS = 500
 
 
 # Dynamic stagnation handling parameters
@@ -107,7 +107,7 @@ LOG_FILE = "log.txt"
 def log(message):
     # Print to console and also write to log file.
     print(message)
-    with open(LOG_FILE, "a") as f:
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(message + "\n")
 
 def apply_mutation(robot, rate):
@@ -685,7 +685,7 @@ class BodyFitness:
         return fitness
 
 
-MAX_BRAIN_INPUT_SIZE = 98 # 86
+MAX_BRAIN_INPUT_SIZE = 102 # 86
 MAX_BRAIN_OUTPUT_SIZE = 25
 class Genotype:
     def __init__(self, structure=None, weights=None):
