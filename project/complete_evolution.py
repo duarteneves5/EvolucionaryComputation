@@ -40,8 +40,8 @@ VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
 
 NUM_GENERATIONS = 100
 CMA_ITERS = 3 # 3 controller optimizations for 1 structure optimization
-POPULATION_SIZE = 10
-NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.06))  # 6% elitism
+POPULATION_SIZE = 15
+NUM_ELITE_ROBOTS = 1  # keep only the best robot
 STEPS = 500
 
 CONTROLLER = alternating_gait
@@ -54,7 +54,7 @@ OUTPUT_POPULATION = True   # put with the other globals
 
 TEST_NAME = "baseline"
 
-OUTPUT_ROBOT_GIFS = False                # this serves to output the robot gifs on the evogym so we can better
+OUTPUT_ROBOT_GIFS = True                # this serves to output the robot gifs on the evogym so we can better
 
 def soft_norm(x, ref, k=4.0):
     """smoothly maps x ≥ 0 to (0, 1); reaches 0.98 around x≈ref"""
@@ -497,13 +497,11 @@ class CMAESOptimizer:
         for i in range(self.pop_size):
             self.all_samples.append((generation, pop[i, 0], pop[i, 1]))
 
-        #fitnesses = list(self.executor.map(
-        #    self.fitness_function,
-        #    pop,
-        #    itertools.repeat(generation))
-        #)
-        fitnesses = [self.fitness_function(ind, generation)
-                     for ind in pop]
+        fitnesses = list(self.executor.map(
+            self.fitness_function,
+            pop,
+            itertools.repeat(generation))
+        )
 
         self.previous_gen_best_fitness = self.current_gen_best_fitness
         self.current_gen_best_fitness = max(fitnesses)
@@ -880,6 +878,7 @@ class Genotype:
     def update_structure(self, new_structure):
         self.structure = new_structure
         self.update_mask()
+        self.fitness_wrapper = BodyFitness(self.structure, self.act_mask)
         self.cma = CMAESOptimizer(self.brain, POPULATION_SIZE, self.fitness_wrapper)
 
     def update_weights(self, weights, reconstruct_weights=False):
@@ -1128,7 +1127,7 @@ def main():
                 new_population.append(new_child1)
 
                 if len(new_population) < POPULATION_SIZE:
-                    new_child2 = Genotype(structure=child2_struct, weights=get_weights(parent1.brain, flatten=True))
+                    new_child2 = Genotype(structure=child2_struct, weights=get_weights(parent2.brain, flatten=True))
                     new_population.append(new_child2)
 
             population = new_population
