@@ -919,8 +919,8 @@ def calc_fitness(structure: np.ndarray, flat_weights: np.ndarray):
 
     # BodyFitness is cheap to construct (just stores numpy arrays)
     fitness_fn = BodyFitness(structure, mask)
-    fitness, distance, speed, efficiency, goal_bonus, energy, jerk_sum, fell,  = fitness_fn(flat_weights, return_components=True)
-    return fitness, distance, speed, efficiency, goal_bonus, energy, jerk_sum, fell
+    fitness, R_env, distance, speed, energy, jerk_sum, fell,  = fitness_fn(flat_weights, return_components=True)
+    return fitness, R_env, distance, speed, energy, jerk_sum, fell
 
 
 
@@ -958,12 +958,12 @@ def main():
             for i in range(CMA_ITERS):
                 for genotype in population:
                     genotype.cma.step(i)
-                    print("Stepped!")
+                    #print("Stepped!")
                 for genotype in population:
                     genotype.update_weights(genotype.cma.m, reconstruct_weights=True)
-                    print("Updated!")
+                    #print("Updated!")
             end = time.time()
-            print(f'ControllerEvo took {end - start} seconds with {CMA_ITERS} iterations')
+            #print(f'ControllerEvo took {end - start} seconds with {CMA_ITERS} iterations')
 
             start = time.time()
             # ---- gather arguments for all individuals ----
@@ -986,7 +986,7 @@ def main():
 
             print(fits)
             end = time.time()
-            print(f'Fitness Evaluation took {end - start} seconds')
+            #print(f'Fitness Evaluation took {end - start} seconds')
 
             gen_mean = float(np.mean(fits))
             gen_std = float(np.std(fits))
