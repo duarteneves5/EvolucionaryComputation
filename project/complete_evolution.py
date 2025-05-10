@@ -46,8 +46,8 @@ STEPS = 500
 CONTROLLER = alternating_gait
 # Dynamic stagnation handling parameters
 STAGNATION_LIMIT = 5          # generations without all-time best improvement
-BASE_MUTATION_RATE = 0.05
-MUTATION_RATE_INCREASE = 0.2  # additive increase (e.g., +0.2)
+BASE_MUTATION_RATE = 0.2
+MUTATION_RATE_INCREASE = 0.05  # additive increase (e.g., +0.2)
 OUTPUT_POPULATION = True   # put with the other globals
 
 TEST_NAME = "baseline"
