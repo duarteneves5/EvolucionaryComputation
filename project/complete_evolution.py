@@ -4,28 +4,30 @@ import random
 import numpy as np
 import torch
 import datetime
+import time
 import matplotlib.pyplot as plt
 import imageio
 import csv
 from pathlib import Path
-import utils
 import secrets
 from concurrent.futures import ProcessPoolExecutor
 from evogym import EvoWorld, EvoSim, EvoViewer, sample_robot, get_full_connectivity, is_connected
 from evogym.envs import *
+import utils
 import itertools
 from neural_controller import *
-
+from fixed_controllers import *
+import cProfile, pstats
 
 GLOBAL_EXEC = ProcessPoolExecutor(max_workers=os.cpu_count())
 
 # 'random', 'swap', or 'insert'
-MUTATION_METHOD = 'insert'
+MUTATION_METHOD = 'swap'
 # 'mask', 'one_point', 'two_point'
 CROSSOVER_METHOD = 'one_point'
 
-#SCENARIO = "CaveCrawler-v0"
-SCENARIO = "GapJumper-v0"
+SCENARIO = "CaveCrawler-v0"
+#SCENARIO = "GapJumper-v0"
 
 SEED = secrets.randbelow(1_000_000_000)
 print(f"SEEDING WITH {SEED}")
@@ -38,19 +40,21 @@ VOXEL_TYPES = [0, 1, 2, 3, 4]  # Empty, Rigid, Soft, Active (+/-)
 
 NUM_GENERATIONS = 100
 CMA_ITERS = 3 # 3 controller optimizations for 1 structure optimization
-POPULATION_SIZE = 15
+POPULATION_SIZE = 10
 NUM_ELITE_ROBOTS = max(1, int(POPULATION_SIZE * 0.06))  # 6% elitism
 STEPS = 500
 
+CONTROLLER = alternating_gait
 
 # Dynamic stagnation handling parameters
 STAGNATION_LIMIT = 5          # generations without all-time best improvement
-BASE_MUTATION_RATE = 0.05
-MUTATION_RATE_INCREASE = 0.2  # additive increase (e.g., +0.2)
+BASE_MUTATION_RATE = 0.2
+MUTATION_RATE_INCREASE = 0.05  # additive increase (e.g., +0.2)
+OUTPUT_POPULATION = True   # put with the other globals
 
 TEST_NAME = "baseline"
 
-OUTPUT_ROBOT_GIFS = True                # this serves to output the robot gifs on the evogym so we can better
+OUTPUT_ROBOT_GIFS = False                # this serves to output the robot gifs on the evogym so we can better
 
 def soft_norm(x, ref, k=4.0):
     """smoothly maps x ≥ 0 to (0, 1); reaches 0.98 around x≈ref"""
@@ -109,6 +113,33 @@ def log(message):
     print(message)
     with open(LOG_FILE, "a", encoding='utf-8') as f:
         f.write(message + "\n")
+
+# ------------------ Function to Capture Simulation Frame ------------------
+def capture_simulation_frame(robot, generation, scenario, steps, controller):
+
+    #utils.simulate_best_robot(robot, scenario, steps)
+
+    filename = os.path.join(RUN_DIR, f"simulation_frame_gen_{generation}.gif")
+
+    utils.create_gif(robot.structure, filename=filename, scenario=scenario, steps=2, controller=controller)
+
+
+# -------------------------------- SAVE FULL POPULATION --------------------------------
+def capture_population_frames(population, generation, scenario, steps,controller):
+    """
+    Save a tiny GIF for every robot in the current population.
+    Each GIF lives in   <RUN_DIR>/gen_<generation>/robot_<idx>.gif
+    """
+    # Create a folder for this generation if it doesn't exist.
+    gen_folder = os.path.join(RUN_DIR, f"gen_{generation}")
+    if not os.path.exists(gen_folder):
+        os.makedirs(gen_folder)
+
+    # Loop over each robot in the population.
+    for idx, robot in enumerate(population):
+        filename = os.path.join(gen_folder, f"robot_{idx}.gif")
+        # Capture a GIF for each robot.
+        utils.create_gif(robot.structure, filename=filename, scenario=scenario, steps=2, controller=controller)
 
 def apply_mutation(robot, rate):
     if MUTATION_METHOD == 'random':
@@ -472,7 +503,7 @@ class CMAESOptimizer:
         #    itertools.repeat(generation))
         #)
         fitnesses = [self.fitness_function(ind, generation)
-                     for ind in self.sample_population()]
+                     for ind in pop]
 
         self.previous_gen_best_fitness = self.current_gen_best_fitness
         self.current_gen_best_fitness = max(fitnesses)
@@ -583,7 +614,7 @@ class BodyFitness:
         )
         return fitness
 '''
-class BodyFitness:
+class OLDBodyFitness:
     """
     Reference-free fitness.
     Positive terms:
@@ -632,6 +663,7 @@ class BodyFitness:
         pad_t = torch.from_numpy(pad).unsqueeze(0)
 
         start_x = sim.object_pos_at_time(0, "robot")[0].mean()
+        prev_x = start_x
         prev_act = np.zeros(np.count_nonzero(self.mask))
         prev_acc = np.zeros_like(prev_act)
 
@@ -640,6 +672,8 @@ class BodyFitness:
         jerk_sum = 0.0
         fell = False
 
+        t_reward = 0.0
+        stalled = 0
         # ---------- episode ----------
         for _ in range(STEPS):
             with torch.no_grad():
@@ -650,9 +684,20 @@ class BodyFitness:
             jerk_sum += np.sum((vel - prev_acc) ** 2)
             prev_act, prev_acc = act, vel
 
-            obs, _, term, trunc, _ = env.step(act)
+            obs, reward, term, trunc, _ = env.step(act)
+            t_reward += reward
             cur_x = sim.object_pos_at_time(sim.get_time(), "robot")[0].mean()
             dist_acc = cur_x - start_x  # always non-negative; we clamp later
+            walked_distance = cur_x - prev_x
+            prev_x = cur_x
+
+            if walked_distance < 0.01:
+                stalled += 1
+            else:
+                stalled = 0
+            if stalled > 100:
+                break
+
 
             if term or trunc:
                 fell = True
@@ -687,8 +732,130 @@ class BodyFitness:
         )
 
         if return_components:
-            return (fitness, distance, speed, efficiency,
+            return (t_reward, distance, speed, efficiency,
                     goal_bonus, energy, jerk_sum, fell)
+        return t_reward
+
+# ------------------------------------------------------------------------
+#  Safe, task-agnostic fitness for EvoGym CaveCrawler / GapJumper
+# ------------------------------------------------------------------------
+class BodyFitness:
+    """
+    Main term
+        R_env         – the cumulative reward returned by the EvoGym env
+                        (Δx for CaveCrawler, landing bonus for GapJumper).
+
+    Early-stage shaping (fades out after N_SHAPING_GEN generations)
+        + c_d * distance
+        + c_s * mean speed
+
+    Soft costs
+        − c_E * total actuation energy proxy   (|τ·Δτ|)
+        − c_J * jerk of actuation sequence     (Σ(Δacc)²)
+
+    Hard penalties
+        − CRASH_PENALTY   if the robot terminates early
+        + GAP_BONUS       once it clearly clears the gap (GapJumper only)
+    """
+    # ---------- hyper-parameters ----------
+    N_SHAPING_GEN  = 20      # generations over which shaping fades to zero
+    c_d            = 0.20    # distance shaping coefficient
+    c_s            = 0.40    # speed shaping coefficient
+    c_E            = 1e-7    # energy cost coefficient
+    c_J            = 1e-4    # jerk  cost coefficient
+    CRASH_PENALTY  = 20.0
+    GAP_BONUS      = 100.0   # added once end_x passes the gap centre
+
+    def __init__(self, body, mask):
+        self.body = body
+        self.mask = mask
+
+        # centre of the chasm for the stock GapJumper map
+        self.gap_x = 25.0 if SCENARIO.startswith("Gap") else None
+
+    # ------------------------------------------------------------------
+    def __call__(self, weights, generation=0, return_components=False):
+        # ---- rebuild the tiny network (fast) ----
+        brain = NeuralController(MAX_BRAIN_INPUT_SIZE, MAX_BRAIN_OUTPUT_SIZE)
+        set_weights(brain, weights, reconstruct_weights=True)
+
+        # ---- make env ----
+        env = gym.make(
+            SCENARIO,
+            max_episode_steps=STEPS,
+            body=self.body,
+            connections=get_full_connectivity(self.body)
+        )
+        sim  = env.sim
+        obs, _ = env.reset()
+
+        pad   = np.zeros(MAX_BRAIN_INPUT_SIZE, dtype=np.float32)
+        pad[:len(obs)] = obs
+        pad_t = torch.from_numpy(pad).unsqueeze(0)
+
+        start_x   = sim.object_pos_at_time(0, "robot")[0].mean()
+        prev_act  = np.zeros(np.count_nonzero(self.mask))
+        prev_acc  = np.zeros_like(prev_act)
+
+        # ---- accumulators ----
+        R_env       = 0.0
+        distance    = 0.0
+        speed       = 0.0     # will compute at the end
+        energy      = 0.0
+        jerk_sum    = 0.0
+        fell        = False
+
+        for _ in range(STEPS):
+            with torch.no_grad():
+                act = brain(pad_t).squeeze(0).numpy()[self.mask]
+
+            # physics proxies
+            vel       = act - prev_act
+            energy   += np.sum(np.abs(act * vel))
+            jerk_sum += np.sum((vel - prev_acc) ** 2)
+            prev_act, prev_acc = act, vel
+
+            # step env
+            obs, r, terminated, truncated, _ = env.step(act)
+            R_env += r
+
+            if terminated or truncated:
+                fell = True
+                break
+
+            pad[:] = 0.0
+            pad[:len(obs)] = obs
+
+        # ---- episode stats ----
+        tf        = sim.get_time()
+        end_x     = sim.object_pos_at_time(tf, "robot")[0].mean()
+        distance  = max(0.0, end_x - start_x)
+        speed     = distance / max(1e-6, tf)
+        env.close()
+
+        # ---- shaping scale (decays linearly) ----
+        shaping_scale = max(0.0, 1.0 - generation / self.N_SHAPING_GEN)
+
+        # ---- fitness components ----
+        fitness  = R_env
+        fitness += shaping_scale * (self.c_d * distance + self.c_s * speed)
+        fitness += self.GAP_BONUS if (self.gap_x and end_x >= self.gap_x) else 0.0
+        fitness -= self.c_E * energy
+        fitness -= self.c_J * jerk_sum
+        if fell:
+            fitness -= self.CRASH_PENALTY
+
+        if return_components:
+            return (
+                fitness,
+                R_env,
+                distance,
+                speed,
+                energy,
+                jerk_sum,
+                int(fell),
+            )
+
         return fitness
 
 
@@ -759,7 +926,9 @@ def calc_fitness(structure: np.ndarray, flat_weights: np.ndarray):
 
 
 def main():
+    global RUN_DIR, LOG_FILE
     RUN_DIR = setup_run_directory()
+    LOG_FILE = os.path.join(RUN_DIR, "log.txt")
     population = [Genotype() for _ in range(POPULATION_SIZE)]
 
     # per‐generation stats
@@ -769,7 +938,7 @@ def main():
     best_per_gen_ever = []
 
     # Stagnation tracking
-    best_all_time = -float('inf')
+    best_fitness = -float('inf')
 
     stagnation_counter = 0
     current_mutation_rate = BASE_MUTATION_RATE
@@ -779,8 +948,7 @@ def main():
         writer = csv.writer(csvfile)
         writer.writerow([
             "generation", "ind_idx",
-            "fitness", "distance", "speed", "efficiency", "goal_bonus",
-            "energy", "jerk", "fell"
+            "fitness", "base_reward", "distance", "speed", "energy", "jerk_sum",
         ])
 
     best_weights = None
@@ -791,12 +959,12 @@ def main():
             for i in range(CMA_ITERS):
                 for genotype in population:
                     genotype.cma.step(i)
-                    #print("Stepped!")
+                    print("Stepped!")
                 for genotype in population:
                     genotype.update_weights(genotype.cma.m, reconstruct_weights=True)
-                    #print("Updated!")
+                    print("Updated!")
             end = time.time()
-            #print(f'ControllerEvo took {end - start} seconds with {CMA_ITERS} iterations')
+            print(f'ControllerEvo took {end - start} seconds with {CMA_ITERS} iterations')
 
             start = time.time()
             # ---- gather arguments for all individuals ----
@@ -805,21 +973,21 @@ def main():
 
             # ---- run them in parallel ----
             fits_vals = list(GLOBAL_EXEC.map(calc_fitness, structures, weights))
-            fits, dist_vals, speed_vals, efficiency_vals, goal_vals, energy_vals, jerk_vals, fell_vals = map(
+            fits, base_rw_vals, distance_vals, speed_vals, energy_vals, jerk_vals, fell_vals = map(
                 np.array, zip(*fits_vals)
             )
 
             with csv_path.open("a", newline="") as csvfile:
                 writer = csv.writer(csvfile)
-                for idx, (fit, d, s, eff, g, e, j, f) in enumerate(zip(
-                        fits, dist_vals, speed_vals,
-                        efficiency_vals, goal_vals, energy_vals, jerk_vals, fell_vals)):
-                    writer.writerow([gen, idx, fit, d, s, eff, g, e, j, int(f)])
+                for idx, (fit, br, d, s, eg, j, f) in enumerate(zip(
+                        fits, base_rw_vals, distance_vals,
+                        speed_vals, energy_vals, jerk_vals, fell_vals)):
+                    writer.writerow([fit, br, d, s, eg, j, int(f)])
 
 
-            #print(fits)
+            print(fits)
             end = time.time()
-            #print(f'Fitness Evaluation took {end - start} seconds')
+            print(f'Fitness Evaluation took {end - start} seconds')
 
             gen_mean = float(np.mean(fits))
             gen_std = float(np.std(fits))
@@ -827,8 +995,9 @@ def main():
 
             best_idx = int(np.argmax(fits))
             best_structure = population[best_idx].structure
+            best_robot = population[best_idx]
 
-            if gen_best > best_all_time:
+            if gen_best > best_fitness:
                 best_genotype = population[best_idx]
 
             plt.figure(figsize=(3, 3))
@@ -885,13 +1054,26 @@ def main():
             log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} ±{gen_std:.3f} | All‐Time Best: {best_all_time:.3f} | MutRate: {current_mutation_rate:.3f}")
 
             # === Check stagnation ===
-            if gen_best > best_all_time:
-                best_all_time = gen_best
+            if gen_best > best_fitness:
+                best_fitness = gen_best
+                best_genotype = population[best_idx]
                 stagnation_counter = 0
                 current_mutation_rate = BASE_MUTATION_RATE
             else:
                 stagnation_counter += 1
 
+            # update all‐time best
+            best_fitness = max(best_fitness, gen_best)
+            best_per_gen_ever.append(best_fitness)
+
+            if OUTPUT_ROBOT_GIFS:
+                capture_simulation_frame(best_robot, gen, SCENARIO, STEPS, CONTROLLER)
+
+            if OUTPUT_POPULATION:
+                capture_population_frames(population, gen, SCENARIO, STEPS, CONTROLLER)
+
+            #print(f"Gen {gen:03d} | Best: {gen_best:.3f} | Mean: {gen_best:.3f} | MutRate: {current_mutation_rate:.3f}")
+            log(f"Gen {gen:2d} | Best: {gen_best:.3f} | Avg: {gen_mean:.3f} ±{gen_std:.3f} | All‐Time Best: {best_fitness:.3f} | MutRate: {current_mutation_rate:.3f}")
 
             # === Handle stagnation ===
             if stagnation_counter >= STAGNATION_LIMIT:
@@ -986,5 +1168,9 @@ def main():
     plt.close()
 
 if __name__ == '__main__':
-    #multiprocessing.freeze_support()
+    multiprocessing.freeze_support()
+    prof = cProfile.Profile()
+    prof.enable()
     main()
+    prof.disable()
+    pstats.Stats(prof).sort_stats("cumtime").print_stats(20)
