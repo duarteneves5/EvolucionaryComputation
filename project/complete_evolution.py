@@ -616,8 +616,8 @@ class BodyFitness:
         fitness  = R_env
         fitness += shaping_scale * (self.c_d * distance + self.c_s * speed)
         fitness += self.GAP_BONUS if (self.gap_x and end_x >= self.gap_x) else 0.0
-        fitness -= self.c_E * energy
-        fitness -= self.c_J * jerk_sum
+        #fitness -= self.c_E * energy
+        #fitness -= self.c_J * jerk_sum
         #if fell:
             #fitness -= self.CRASH_PENALTY
 
@@ -754,7 +754,7 @@ def main():
 
             with csv_path.open("a", newline="") as csvfile:
                 writer = csv.writer(csvfile)
-                for idx, (fit, br, d, s, eg, j, f) in enumerate(zip(
+                for idx, (fit, br, d, s, eg, j) in enumerate(zip(
                         fits, base_rw_vals, distance_vals,
                         speed_vals, energy_vals, jerk_vals)):
                     writer.writerow([fit, br, d, s, eg, j])
